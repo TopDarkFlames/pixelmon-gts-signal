@@ -1,0 +1,16 @@
+<section class="dashboard-head compact-head seller-head">
+  <div><span class="eyebrow">SELLER INTELLIGENCE / 30 DIAS</span><h1><%= h(@seller) %></h1><p>Frequência, variedade e histórico público de anúncios no GTS Global.</p></div>
+  <form method="post" action="/favorites" class="favorite-form"><input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>"><input type="hidden" name="kind" value="seller"><input type="hidden" name="value" value="<%= h(@seller) %>"><input type="hidden" name="return_to" value="/seller/<%= CGI.escapeURIComponent(@seller) %>"><button class="seller-favorite <%= 'is-favorite' if favorite?('seller', @seller) %>">★ <%= favorite?('seller', @seller) ? 'Favoritado' : 'Favoritar vendedor' %></button></form>
+</section>
+
+<section class="stats-grid">
+  <article class="stat"><span>Últimas 24 horas</span><strong><%= @seller_metrics[:day] %></strong><small>anúncios</small></article>
+  <article class="stat stat-money"><span>Últimos 7 dias</span><strong><%= @seller_metrics[:week] %></strong><small>anúncios</small></article>
+  <article class="stat stat-token"><span>Últimos 30 dias</span><strong><%= @seller_metrics[:month] %></strong><small>anúncios</small></article>
+  <article class="stat stat-site"><span>Variedade</span><strong><%= @seller_metrics[:items] %></strong><small>itens diferentes</small></article>
+</section>
+
+<section class="two-column-layout seller-layout">
+  <article class="card"><span class="section-code">RECORRÊNCIA / 30 DIAS</span><h2>Itens mais anunciados</h2><div class="seller-items"><% @seller_top_items.each do |item| %><div><span class="currency currency-<%= price_type(item) %>"><%= h(item['price_type']) %></span><strong><%= h(item['item']) %></strong><small><%= item['total'] %> anúncios · <%= format_number(item['minimum']) %> a <%= format_number(item['maximum']) %></small></div><% end %></div></article>
+  <article class="card"><span class="section-code">ATIVIDADE RECENTE</span><h2>Últimos anúncios</h2><div class="seller-history"><% @seller_rows.first(30).each do |row| %><a href="/listing/<%= row['id'] %>"><span><%= h(format_detected_at(row['detected_at'])) %></span><strong><%= h(row['item']) %></strong><small><%= h(row['price']) %></small></a><% end %></div></article>
+</section>

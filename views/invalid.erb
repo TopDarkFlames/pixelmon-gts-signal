@@ -1,0 +1,12 @@
+<section class="dashboard-head compact-head admin-head"><div><span class="eyebrow">QUALIDADE / REVISÃO</span><h1>Registros isolados</h1><p>Linhas que não possuem o marcador completo do GTS Global.</p></div><div class="admin-stamp"><strong><%= @invalid_total %></strong><span>isolados</span></div></section>
+
+<section class="card">
+  <div class="panel-heading"><div><span class="section-code">AUDITORIA DO PARSER</span><h2>Página <%= @page %> de <%= @invalid_pages %></h2></div><a class="button-link secondary-link" href="/admin">Voltar ao admin</a></div>
+  <% if @invalid_rows.empty? %><p class="empty-state">Nenhum registro isolado.</p><% end %>
+  <div class="invalid-list">
+    <% @invalid_rows.each do |row| %>
+      <article><div><span>#<%= row['id'] %> · <%= h(format_detected_at(row['detected_at'])) %></span><strong><%= h(row['item']) %></strong><small><%= h(row['seller']) %> · <%= h(row['price']) %></small><p><%= h(row['raw_chat']) %></p></div><form method="post" action="/admin/invalid/<%= row['id'] %>"><input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>"><input type="hidden" name="return_to" value="/admin/invalid?page=<%= @page %>"><button name="action" value="restore" class="secondary">Restaurar</button></form></article>
+    <% end %>
+  </div>
+  <nav class="pagination"><% if @page > 1 %><a href="?page=<%= @page - 1 %>">Anterior</a><% end %><span>Página <strong><%= @page %></strong> de <%= @invalid_pages %></span><% if @page < @invalid_pages %><a href="?page=<%= @page + 1 %>">Próxima</a><% end %></nav>
+</section>

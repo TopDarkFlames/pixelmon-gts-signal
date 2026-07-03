@@ -2,6 +2,21 @@
 
 Todas as mudanças relevantes deste projeto serão registradas aqui.
 
+## [0.3.0] - 2026-07-03
+
+### Adicionado
+
+- Favoritos de itens e vendedores com página pessoal.
+- Perfil de vendedor com atividade em 24h, 7d e 30d.
+- Comparação temporal de mediana, volume e tendência semanal.
+- Notificações do navegador para favoritos e alertas.
+- Manifesto PWA e service worker para interação com notificações.
+- Revisão administrativa dos registros isolados.
+- Testes reais de Discord e Telegram pela fila persistente.
+- Latência média de entrega e estado do SMTP no painel administrativo.
+- Backup automático do SQLite com retenção configurável.
+- Workflow de testes no GitHub Actions.
+
 ## [0.2.1] - 2026-07-03
 
 ### Corrigido

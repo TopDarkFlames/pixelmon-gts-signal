@@ -151,16 +151,23 @@ Rotas principais:
 - `/register`: solicitação de conta;
 - `/dashboard`: histórico ao vivo;
 - `/opportunities`: anúncios abaixo da mediana com histórico suficiente;
+- `/favorites`: itens e vendedores acompanhados pelo usuário;
+- `/seller/:name`: frequência, variedade e histórico do vendedor;
 - `/alerts`: monitores personalizados e resultados;
 - `/settings`: IDs privados do Discord e Telegram;
 - `/listing/:id`: detalhes e histórico de preço;
 - `/admin`: usuários, convites e aprovações;
+- `/admin/invalid`: revisão dos registros isolados pelo parser;
 - `/forgot-password`: recuperação de senha;
 - `/health`: verificação do serviço.
 
 O painel oferece tema claro/escuro, atualização automática por versão, filtros por período e preço, detector de oportunidades, alertas por usuário, telemetria das integrações e recuperação de senha.
 
 A Central de Oportunidades usa até 30 dias de histórico, exige pelo menos três amostras comparáveis e remove valores extremos pelo intervalo interquartil quando existem oito ou mais registros. Cada sinal exibe quantidade de amostras e confiança baixa, média ou alta.
+
+Favoritos de itens e vendedores alimentam notificações do navegador. Elas funcionam enquanto o site estiver aberto ou minimizado; avisos com o navegador totalmente fechado exigiriam Web Push com chaves VAPID e um serviço público permanente.
+
+Antes de cada inicialização, o launcher cria um backup consistente do SQLite em `runtime/backups/`. A retenção padrão é de 14 dias e pode ser alterada com `PANEL_BACKUP_RETENTION_DAYS`.
 
 Os anúncios e trabalhos de entrega ficam no SQLite. Falhas de Discord ou Telegram são tentadas novamente até cinco vezes e sobrevivem a reinicializações. O antigo `gts_history.csv` é importado de forma incremental por fingerprint, sem duplicar anúncios já migrados.
 
@@ -171,6 +178,8 @@ Os anúncios e trabalhos de entrega ficam no SQLite. Falhas de Discord ou Telegr
 ```
 
 Os testes cobrem o parser, moedas, deduplicação, alertas, fila persistente, migração e renderização das rotas Sinatra.
+
+O workflow em `.github/workflows/test.yml` executa a mesma suíte em cada push e pull request.
 
 ## Arquivos importantes
 

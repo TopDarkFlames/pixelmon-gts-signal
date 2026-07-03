@@ -3,11 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
-  <title><%= h(@title) %> · Pixelmon GTS Signal</title>
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#ef3340">
+    <title><%= h(@title) %> · Pixelmon GTS Signal</title>
+    <link rel="manifest" href="/manifest.webmanifest">
     <link rel="stylesheet" href="/styles.css">
     <script defer src="/htmx.min.js"></script>
-    <script defer src="/dashboard.js?v=2"></script>
+    <script defer src="/dashboard.js?v=3"></script>
 </head>
 <body class="page-<%= h(@page_class) %>">
   <header>
@@ -27,6 +29,7 @@
         <% if @current_user %>
           <a href="/dashboard">Mercado</a>
           <a href="/opportunities">Oportunidades</a>
+          <a href="/favorites">Favoritos</a>
           <a href="/alerts" class="nav-alerts">Alertas<% if @nav_alert_count.to_i.positive? %><b><%= @nav_alert_count %></b><% end %></a>
           <a href="/settings">Preferências</a>
           <% if @current_user["role"] == "admin" %><a href="/admin">Admin</a><% end %>

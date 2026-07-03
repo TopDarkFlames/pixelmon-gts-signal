@@ -601,6 +601,7 @@ def ensure_storage(config: dict[str, Any]) -> None:
             CREATE INDEX IF NOT EXISTS idx_listings_detected ON listings(detected_at_epoch DESC);
             CREATE INDEX IF NOT EXISTS idx_listings_type_detected ON listings(price_type, detected_at_epoch DESC);
             CREATE INDEX IF NOT EXISTS idx_listings_item ON listings(item_key, price_type, detected_at_epoch DESC);
+            CREATE INDEX IF NOT EXISTS idx_listings_seller_lower ON listings(lower(seller), detected_at_epoch DESC);
             CREATE TABLE IF NOT EXISTS alerts (
               id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, query TEXT NOT NULL,
               price_type TEXT NOT NULL DEFAULT 'all', min_amount REAL, max_amount REAL,
@@ -613,6 +614,11 @@ def ensure_storage(config: dict[str, Any]) -> None:
               UNIQUE(alert_id, listing_id)
             );
             CREATE INDEX IF NOT EXISTS idx_alert_matches_user ON alert_matches(user_id, seen_at, created_at DESC);
+            CREATE TABLE IF NOT EXISTS favorites (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+              kind TEXT NOT NULL, value TEXT NOT NULL, value_key TEXT NOT NULL, created_at INTEGER NOT NULL,
+              UNIQUE(user_id, kind, value_key)
+            );
             CREATE TABLE IF NOT EXISTS notification_queue (
               id INTEGER PRIMARY KEY AUTOINCREMENT, listing_id INTEGER NOT NULL, alert_id INTEGER NOT NULL DEFAULT 0,
               channel TEXT NOT NULL, destination TEXT NOT NULL, payload TEXT NOT NULL,

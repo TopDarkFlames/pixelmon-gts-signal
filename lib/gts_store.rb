@@ -132,6 +132,7 @@ module GTSStore
       CREATE INDEX IF NOT EXISTS idx_listings_detected ON listings(detected_at_epoch DESC);
       CREATE INDEX IF NOT EXISTS idx_listings_type_detected ON listings(price_type, detected_at_epoch DESC);
       CREATE INDEX IF NOT EXISTS idx_listings_item ON listings(item_key, price_type, detected_at_epoch DESC);
+      CREATE INDEX IF NOT EXISTS idx_listings_seller_lower ON listings(lower(seller), detected_at_epoch DESC);
       CREATE TABLE IF NOT EXISTS alerts (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, query TEXT NOT NULL,
         price_type TEXT NOT NULL DEFAULT 'all', min_amount REAL, max_amount REAL,
@@ -147,6 +148,14 @@ module GTSStore
         FOREIGN KEY(listing_id) REFERENCES listings(id) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS idx_alert_matches_user ON alert_matches(user_id, seen_at, created_at DESC);
+      CREATE TABLE IF NOT EXISTS favorites (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('item', 'seller')),
+        value TEXT NOT NULL, value_key TEXT NOT NULL, created_at INTEGER NOT NULL,
+        UNIQUE(user_id, kind, value_key),
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, kind, created_at DESC);
       CREATE TABLE IF NOT EXISTS notification_queue (
         id INTEGER PRIMARY KEY AUTOINCREMENT, listing_id INTEGER NOT NULL, alert_id INTEGER NOT NULL DEFAULT 0,
         channel TEXT NOT NULL, destination TEXT NOT NULL, payload TEXT NOT NULL,

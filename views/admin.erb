@@ -3,12 +3,20 @@
   <div class="admin-stamp"><strong><%= format("%02d", @pending.length) %></strong><span>pendentes</span></div>
 </section>
 
+<% notices = { 'discord_queued' => 'Teste do Discord adicionado à fila.', 'telegram_queued' => 'Teste do Telegram adicionado à fila.', 'missing_discord' => 'Configure um ID do Discord nas Preferências.', 'missing_telegram' => 'Configure um ID do Telegram nas Preferências.' } %>
+<% if notices[params['notice']] %><p class="success-notice"><%= h(notices[params['notice']]) %></p><% end %>
+
 <section class="operations-strip admin-operations">
   <% %w[log_watcher discord telegram tunnel].each do |service| %>
     <% state = @health[service] %><% healthy = state && state['status'] == 'online' %>
     <div class="service-state <%= healthy ? 'healthy' : 'unknown' %>"><span><%= service.tr('_',' ').upcase %></span><strong><%= healthy ? 'ONLINE' : '—' %></strong><small><%= h(state ? state['detail'].to_s[0,45] : 'sem telemetria') %></small></div>
   <% end %>
   <div><span>FILA</span><strong><%= @queue_summary.fetch('pending', 0) + @queue_summary.fetch('retry', 0) %></strong><small><%= @queue_summary.fetch('failed', 0) %> falhas finais</small></div>
+</section>
+
+<section class="card admin-tools">
+  <div><span class="section-code">DIAGNÓSTICO</span><h2>Operação do sistema</h2><p class="muted">Entrega média: <strong><%= format('%.2f', @delivery_latency) %>s</strong> · SMTP: <strong><%= @smtp_configured ? 'configurado' : 'pendente' %></strong> · Registros isolados: <strong><%= @invalid_count %></strong></p></div>
+  <div class="admin-tool-actions"><form method="post" action="/admin/test-notification"><input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>"><button name="channel" value="discord">Testar Discord</button><button name="channel" value="telegram" class="secondary">Testar Telegram</button></form><a class="button-link secondary-link" href="/admin/invalid">Revisar isolados</a></div>
 </section>
 
 <section class="card">

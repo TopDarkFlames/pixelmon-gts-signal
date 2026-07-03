@@ -14,6 +14,7 @@ require "json"
 require "net/smtp"
 require "openssl"
 require "securerandom"
+require "set"
 require "sinatra/base"
 require "sqlite3"
 require "time"
@@ -179,6 +180,10 @@ class PixelmonGTSPanel < Sinatra::Base
             "SELECT COUNT(*) FROM alert_matches WHERE user_id = ? AND seen_at IS NULL",
             [@current_user["id"]]
           ).to_i
+          @favorite_keys = database.execute(
+            "SELECT kind, value_key FROM favorites WHERE user_id = ?",
+            [@current_user["id"]]
+          ).map { |row| "#{row['kind']}:#{row['value_key']}" }.to_set
         end
       end
     end
@@ -322,6 +327,28 @@ class PixelmonGTSPanel < Sinatra::Base
       }
     end
 
+    def item_period_comparison(database, item_key, price_type)
+      periods = { "24 horas" => 86_400, "7 dias" => 604_800, "30 dias" => 2_592_000 }
+      comparison = periods.to_h do |label, seconds|
+        values = database.execute(
+          "SELECT amount_value FROM listings WHERE status='sent' AND item_key=? AND price_type=? AND amount_value IS NOT NULL AND detected_at_epoch >= ?",
+          [item_key, price_type, now - seconds]
+        ).map { |row| row["amount_value"] }
+        [label, robust_price_stats(values)]
+      end
+      current_week = comparison.fetch("7 dias")[:median]
+      previous_values = database.execute(<<~SQL, [item_key, price_type, now - (14 * 86_400), now - (7 * 86_400)])
+        SELECT amount_value FROM listings
+        WHERE status='sent' AND item_key=? AND price_type=? AND amount_value IS NOT NULL
+          AND detected_at_epoch >= ? AND detected_at_epoch < ?
+      SQL
+      previous_week = robust_price_stats(previous_values.map { |row| row["amount_value"] })[:median]
+      trend = if current_week&.positive? && previous_week&.positive?
+                ((current_week - previous_week) / previous_week * 100).round
+              end
+      [comparison, trend]
+    end
+
     def dashboard_stats(database)
       since = now - 86_400
       counts = database.execute(
@@ -357,6 +384,21 @@ class PixelmonGTSPanel < Sinatra::Base
 
     def confidence_class(value)
       { "alta" => "high", "média" => "medium", "baixa" => "low" }.fetch(value.to_s, "insufficient")
+    end
+
+    def favorite?(kind, value)
+      @favorite_keys&.include?("#{kind}:#{GTSStore.fold(value)}")
+    end
+
+    def safe_return_to(value, fallback = "/dashboard")
+      destination = value.to_s
+      destination.start_with?("/") && !destination.start_with?("//") ? destination : fallback
+    end
+
+    def market_return_path
+      allowed = params.to_h.select { |key, _value| %w[q type period sort min max page].include?(key) }
+      query = Rack::Utils.build_query(allowed)
+      query.empty? ? "/dashboard" : "/dashboard?#{query}"
     end
 
     def price_type(row)
@@ -624,6 +666,44 @@ class PixelmonGTSPanel < Sinatra::Base
     JSON.generate(id: latest_id, checked_at: now)
   end
 
+  get "/notifications/check" do
+    approved!
+    content_type :json
+    headers "Cache-Control" => "no-store, max-age=0"
+    after_id = [params.fetch("after", "0").to_i, 0].max
+    result = with_db do |database|
+      favorites = database.execute("SELECT kind, value_key FROM favorites WHERE user_id=?", [@current_user["id"]])
+      favorite_items = favorites.select { |row| row["kind"] == "item" }.map { |row| row["value_key"] }.to_set
+      favorite_sellers = favorites.select { |row| row["kind"] == "seller" }.map { |row| row["value_key"] }.to_set
+      alerts = database.execute("SELECT * FROM alerts WHERE user_id=? AND active=1", [@current_user["id"]])
+      listings = database.execute(
+        "SELECT * FROM listings WHERE status='sent' AND id>? ORDER BY id ASC LIMIT 50",
+        [after_id]
+      )
+      matches = listings.filter_map do |listing|
+        reasons = []
+        reasons << "Item favorito" if favorite_items.include?(listing["item_key"])
+        reasons << "Vendedor favorito" if favorite_sellers.include?(GTSStore.fold(listing["seller"]))
+        alerts.each do |alert|
+          searchable = GTSStore.fold("#{listing['item']} #{listing['seller']}")
+          next unless searchable.include?(GTSStore.fold(alert["query"]))
+          next unless alert["price_type"].to_s.empty? || alert["price_type"] == "all" || alert["price_type"] == listing["price_type"]
+          amount = listing["amount_value"]&.to_f
+          next if alert["min_amount"] && (!amount || amount < alert["min_amount"].to_f)
+          next if alert["max_amount"] && (!amount || amount > alert["max_amount"].to_f)
+          reasons << "Alerta: #{alert['query']}"
+        end
+        next if reasons.empty?
+        {
+          id: listing["id"], item: listing["item"], seller: listing["seller"],
+          price: listing["price"], reasons: reasons.uniq
+        }
+      end
+      { matches: matches, cursor: listings.last&.fetch("id", after_id) || after_id }
+    end
+    JSON.generate(result)
+  end
+
   get "/listing/:id" do
     approved!
     with_db do |database|
@@ -634,8 +714,35 @@ class PixelmonGTSPanel < Sinatra::Base
         ORDER BY detected_at_epoch DESC LIMIT 60
       SQL
       @price_stats = robust_price_stats(@price_history.map { |row| row["amount_value"] })
+      @period_comparison, @weekly_trend = item_period_comparison(database, @listing["item_key"], @listing["price_type"])
     end
     page("Detalhes", :listing)
+  end
+
+  get "/seller/:name" do
+    approved!
+    seller_key = params["name"].to_s.downcase
+    with_db do |database|
+      @seller_rows = database.execute(
+        "SELECT * FROM listings WHERE status='sent' AND lower(seller)=? ORDER BY detected_at_epoch DESC LIMIT 100",
+        [seller_key]
+      )
+      halt 404, page("Não encontrado", :status, code: "404", title: "Vendedor não encontrado", message: "Nenhum anúncio global válido foi encontrado.") if @seller_rows.empty?
+      @seller = @seller_rows.first["seller"]
+      @seller_metrics = {
+        day: database.get_first_value("SELECT COUNT(*) FROM listings WHERE status='sent' AND lower(seller)=? AND detected_at_epoch>=?", [seller_key, now - 86_400]).to_i,
+        week: database.get_first_value("SELECT COUNT(*) FROM listings WHERE status='sent' AND lower(seller)=? AND detected_at_epoch>=?", [seller_key, now - (7 * 86_400)]).to_i,
+        month: database.get_first_value("SELECT COUNT(*) FROM listings WHERE status='sent' AND lower(seller)=? AND detected_at_epoch>=?", [seller_key, now - (30 * 86_400)]).to_i,
+        items: database.get_first_value("SELECT COUNT(DISTINCT item_key) FROM listings WHERE status='sent' AND lower(seller)=? AND detected_at_epoch>=?", [seller_key, now - (30 * 86_400)]).to_i
+      }
+      @seller_top_items = database.execute(<<~SQL, [seller_key, now - (30 * 86_400)])
+        SELECT item, item_key, price_type, COUNT(*) AS total, MIN(amount_value) AS minimum,
+               MAX(amount_value) AS maximum, MAX(detected_at_epoch) AS last_seen
+        FROM listings WHERE status='sent' AND lower(seller)=? AND detected_at_epoch>=?
+        GROUP BY item_key, price_type ORDER BY total DESC, last_seen DESC LIMIT 12
+      SQL
+    end
+    page("Vendedor", :seller)
   end
 
   get "/opportunities" do
@@ -659,6 +766,53 @@ class PixelmonGTSPanel < Sinatra::Base
       @opportunity_summary = @opportunities.group_by { |row| row["price_type"] }.transform_values(&:length)
     end
     page("Oportunidades", :opportunities)
+  end
+
+  get "/favorites" do
+    approved!
+    with_db do |database|
+      favorites = database.execute("SELECT * FROM favorites WHERE user_id = ? ORDER BY created_at DESC", [@current_user["id"]])
+      @favorites = favorites.map do |favorite|
+        column = favorite["kind"] == "item" ? "item_key" : "lower(seller)"
+        latest = database.get_first_row(
+          "SELECT * FROM listings WHERE status='sent' AND #{column} = ? ORDER BY detected_at_epoch DESC LIMIT 1",
+          [favorite["value_key"]]
+        )
+        count = database.get_first_value(
+          "SELECT COUNT(*) FROM listings WHERE status='sent' AND #{column} = ? AND detected_at_epoch >= ?",
+          [favorite["value_key"], now - (30 * 86_400)]
+        ).to_i
+        favorite.merge("latest" => latest, "monthly_count" => count)
+      end
+    end
+    page("Favoritos", :favorites)
+  end
+
+  post "/favorites" do
+    approved!
+    csrf!
+    kind = params["kind"].to_s
+    value = params["value"].to_s.strip[0, 160]
+    halt 422, "Favorito inválido." unless %w[item seller].include?(kind) && value.length >= 2
+    value_key = GTSStore.fold(value)
+    with_db do |database|
+      existing = database.get_first_value(
+        "SELECT id FROM favorites WHERE user_id=? AND kind=? AND value_key=?",
+        [@current_user["id"], kind, value_key]
+      )
+      if existing
+        database.execute("DELETE FROM favorites WHERE id=?", [existing])
+        action = "removed"
+      else
+        database.execute(
+          "INSERT INTO favorites(user_id, kind, value, value_key, created_at) VALUES (?, ?, ?, ?, ?)",
+          [@current_user["id"], kind, value, value_key, now]
+        )
+        action = "added"
+      end
+      log_event(database, "favorite_#{action}", @current_user["id"], "#{kind}:#{value}")
+    end
+    redirect safe_return_to(params["return_to"], "/favorites")
   end
 
   get "/alerts" do
@@ -798,6 +952,14 @@ class PixelmonGTSPanel < Sinatra::Base
       SQL
       @queue_summary = database.execute("SELECT status, COUNT(*) AS total FROM notification_queue GROUP BY status").to_h { |row| [row["status"], row["total"].to_i] }
       @health = system_health(database)
+      @invalid_count = database.get_first_value("SELECT COUNT(*) FROM listings WHERE status='invalid'").to_i
+      @delivery_latency = database.get_first_value(<<~SQL).to_f
+        SELECT AVG(sent_at - created_at) FROM (
+          SELECT sent_at, created_at FROM notification_queue
+          WHERE status='sent' AND sent_at IS NOT NULL ORDER BY sent_at DESC LIMIT 100
+        )
+      SQL
+      @smtp_configured = %w[SMTP_HOST SMTP_USER SMTP_PASSWORD SMTP_FROM].all? { |name| !config_env(name).empty? }
     end
     page("Admin", :admin)
   end
@@ -839,6 +1001,63 @@ class PixelmonGTSPanel < Sinatra::Base
       log_event(database, "invite_created", nil, code)
     end
     redirect "/admin"
+  end
+
+  get "/admin/invalid" do
+    admin!
+    @page = [params.fetch("page", "1").to_i, 1].max
+    limit = 80
+    with_db do |database|
+      @invalid_total = database.get_first_value("SELECT COUNT(*) FROM listings WHERE status='invalid'").to_i
+      @invalid_rows = database.execute(
+        "SELECT * FROM listings WHERE status='invalid' ORDER BY detected_at_epoch DESC LIMIT ? OFFSET ?",
+        [limit, (@page - 1) * limit]
+      )
+    end
+    @invalid_pages = [(@invalid_total.to_f / limit).ceil, 1].max
+    page("Revisão", :invalid)
+  end
+
+  post "/admin/invalid/:id" do
+    admin!
+    csrf!
+    halt 400, "Ação inválida." unless params["action"] == "restore"
+    with_db do |database|
+      database.execute("UPDATE listings SET status='sent', reason='admin_restored' WHERE id=? AND status='invalid'", [params["id"].to_i])
+      log_event(database, "invalid_restored", @current_user["id"], params["id"])
+    end
+    redirect safe_return_to(params["return_to"], "/admin/invalid")
+  end
+
+  post "/admin/test-notification" do
+    admin!
+    csrf!
+    channel = params["channel"].to_s
+    halt 400, "Canal inválido." unless %w[discord telegram].include?(channel)
+    destination = if channel == "discord"
+                    @current_user["discord_user_id"].to_s.empty? ? config_env("DISCORD_USER_ID") : @current_user["discord_user_id"].to_s
+                  else
+                    @current_user["telegram_chat_id"].to_s.empty? ? config_env("TELEGRAM_CHAT_ID") : @current_user["telegram_chat_id"].to_s
+                  end
+    redirect "/admin?notice=missing_#{channel}" if destination.empty?
+
+    fingerprint = "admin-test-#{SecureRandom.hex(12)}"
+    detected_at = Time.now.utc.iso8601
+    listing = {
+      "item" => "Teste de integração", "price" => "Token 1.00 Tokens", "raw_chat" => "Teste manual do painel",
+      "seller" => "GTS_SIGNAL", "amount" => "1.00", "currency" => "Tokens", "price_type" => "token",
+      "fingerprint" => fingerprint, "detected_at" => detected_at
+    }
+    with_db do |database|
+      listing_id = GTSStore.insert_listing(database, listing.merge("status" => "test"))
+      timestamp = now
+      database.execute(
+        "INSERT INTO notification_queue(listing_id, alert_id, channel, destination, payload, status, next_attempt_at, created_at) VALUES (?, 0, ?, ?, ?, 'pending', ?, ?)",
+        [listing_id, channel, destination, JSON.generate("listing" => listing, "message" => "Teste de integração do painel", "alert" => "Teste manual"), timestamp, timestamp]
+      )
+      log_event(database, "#{channel}_test_queued", @current_user["id"])
+    end
+    redirect "/admin?notice=#{channel}_queued"
   end
 
   get "/review" do

@@ -1,0 +1,19 @@
+<section class="dashboard-head compact-head favorites-head">
+  <div><span class="eyebrow">WATCHLIST / CURADORIA</span><h1>Seus favoritos</h1><p>Itens e vendedores que você escolheu acompanhar de perto.</p></div>
+  <div class="admin-stamp favorite-stamp"><strong><%= @favorites.length %></strong><span>favoritos</span></div>
+</section>
+
+<section class="favorite-grid">
+  <% if @favorites.empty? %>
+    <article class="card favorite-empty"><span class="section-code">LISTA VAZIA</span><h2>Nenhum favorito ainda</h2><p>Use a estrela ao lado de um item ou vendedor no mercado.</p><a class="button-link" href="/dashboard">Abrir mercado</a></article>
+  <% end %>
+  <% @favorites.each do |favorite| %>
+    <% latest = favorite['latest'] %>
+    <article class="favorite-card <%= favorite['kind'] %>">
+      <div class="favorite-card-head"><span><%= favorite['kind'] == 'item' ? 'ITEM / POKÉMON' : 'VENDEDOR' %></span><form method="post" action="/favorites" class="favorite-form"><input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>"><input type="hidden" name="kind" value="<%= favorite['kind'] %>"><input type="hidden" name="value" value="<%= h(favorite['value']) %>"><input type="hidden" name="return_to" value="/favorites"><button class="favorite-button is-favorite" title="Remover dos favoritos">★</button></form></div>
+      <h2><% if favorite['kind'] == 'seller' %><a href="/seller/<%= CGI.escapeURIComponent(favorite['value']) %>"><%= h(favorite['value']) %></a><% elsif latest %><a href="/listing/<%= latest['id'] %>"><%= h(favorite['value']) %></a><% else %><%= h(favorite['value']) %><% end %></h2>
+      <p><strong><%= favorite['monthly_count'] %></strong> anúncios nos últimos 30 dias</p>
+      <% if latest %><div class="favorite-latest"><span>Último anúncio</span><strong><%= h(latest['item']) %></strong><small><%= h(latest['price']) %> · <%= h(format_detected_at(latest['detected_at'])) %></small></div><% else %><p class="muted">Sem anúncios válidos no histórico.</p><% end %>
+    </article>
+  <% end %>
+</section>

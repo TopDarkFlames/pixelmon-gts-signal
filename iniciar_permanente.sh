@@ -33,6 +33,30 @@ rotate_log() {
   fi
 }
 
+backup_database() {
+  local configured_path
+  local database_path
+  local backup_dir="$RUNTIME_DIR/backups"
+  local retention_days
+  local backup_path
+
+  configured_path="$(env_value PANEL_DB_PATH access_panel.db)"
+  if [[ "$configured_path" = /* ]]; then
+    database_path="$configured_path"
+  else
+    database_path="$ROOT_DIR/$configured_path"
+  fi
+  [[ -f "$database_path" ]] || return 0
+
+  retention_days="$(env_value PANEL_BACKUP_RETENTION_DAYS 14)"
+  [[ "$retention_days" =~ ^[0-9]+$ ]] || retention_days=14
+  mkdir -p "$backup_dir"
+  backup_path="$backup_dir/access_panel-$(date +%Y%m%d-%H%M%S).db"
+  sqlite3 "$database_path" ".backup '$backup_path'"
+  find "$backup_dir" -type f -name 'access_panel-*.db' -mtime "+$retention_days" -delete
+  echo "Backup SQLite criado: $backup_path"
+}
+
 extract_funnel_url() {
   tailscale funnel status --json 2>/dev/null | python3 -c '
 import json, re, sys
@@ -208,6 +232,7 @@ main() {
   need_command tailscale
   need_command cloudflared
   need_command flock
+  need_command sqlite3
 
   exec 9>"$RUNTIME_DIR/permanent.lock"
   if ! flock -n 9; then
@@ -224,6 +249,8 @@ main() {
   CLOUDFLARE_LOG="$RUNTIME_DIR/cloudflare-contingencia.log"
   ANNOUNCE_LOG="$RUNTIME_DIR/anuncio-site-permanente.log"
   SITE_URL_FILE="$RUNTIME_DIR/site_url.txt"
+
+  backup_database
 
   for log in "$PANEL_LOG" "$BOT_LOG" "$FUNNEL_LOG" "$CLOUDFLARE_LOG" "$ANNOUNCE_LOG"; do
     rotate_log "$log"

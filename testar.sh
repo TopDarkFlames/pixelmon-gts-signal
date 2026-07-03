@@ -13,6 +13,8 @@ bash -n executar_painel.sh iniciar_permanente.sh instalar_servico_permanente.sh 
 python3 -m unittest discover -s test -p 'test_*.py' -v
 ruby test/test_store.rb
 ruby test/test_panel.rb
+ruby -rjson -e 'JSON.parse(File.read("config.json")); JSON.parse(File.read("public/manifest.webmanifest")); puts "JSON: OK"'
+ruby -ryaml -e 'YAML.load_file(".github/workflows/test.yml"); puts "Workflow YAML: OK"'
 ruby -rerb -e 'Dir["views/*.erb"].sort.each { |file| source = ERB.new(File.read(file)).src; RubyVM::InstructionSequence.compile("def __render__; #{source}; end", file) }; puts "ERB: OK"'
 command -v node >/dev/null && node --check public/dashboard.js
 

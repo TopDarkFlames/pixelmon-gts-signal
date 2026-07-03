@@ -1,6 +1,15 @@
 <section class="dashboard-head compact-head">
-  <div><span class="eyebrow">MARKET RECORD / #<%= @listing['id'] %></span><h1><%= h(@listing['item']) %></h1><p>Anunciado por <strong><%= h(@listing['seller']) %></strong> em <%= h(format_detected_at(@listing['detected_at'])) %>.</p></div>
-  <span class="currency currency-<%= price_type(@listing) %> hero-price"><%= h("#{@listing['amount']} #{@listing['currency']}".strip) %></span>
+  <div><span class="eyebrow">MARKET RECORD / #<%= @listing['id'] %></span><h1><%= h(@listing['item']) %></h1><p>Anunciado por <a href="/seller/<%= CGI.escapeURIComponent(@listing['seller'].to_s) %>"><strong><%= h(@listing['seller']) %></strong></a> em <%= h(format_detected_at(@listing['detected_at'])) %>.</p></div>
+  <div class="detail-actions"><span class="currency currency-<%= price_type(@listing) %> hero-price"><%= h("#{@listing['amount']} #{@listing['currency']}".strip) %></span><form method="post" action="/favorites" class="favorite-form"><input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>"><input type="hidden" name="kind" value="item"><input type="hidden" name="value" value="<%= h(@listing['item']) %>"><input type="hidden" name="return_to" value="/listing/<%= @listing['id'] %>"><button class="favorite-button detail-favorite <%= 'is-favorite' if favorite?('item', @listing['item']) %>" title="Favoritar item">★</button></form></div>
+</section>
+
+<section class="card comparison-card">
+  <div class="panel-heading"><div><span class="section-code">COMPARAÇÃO TEMPORAL</span><h2>Preço e volume</h2></div><span class="trend-badge <%= @weekly_trend.to_i > 0 ? 'up' : (@weekly_trend.to_i < 0 ? 'down' : 'flat') %>"><% if @weekly_trend %><%= @weekly_trend.positive? ? '↑' : (@weekly_trend.negative? ? '↓' : '→') %> <%= @weekly_trend.abs %>% na semana<% else %>tendência sem dados<% end %></span></div>
+  <div class="comparison-grid">
+    <% @period_comparison.each do |label, stats| %>
+      <article><span><%= label %></span><strong><%= format_number(stats[:median]) %></strong><small><%= stats[:count] %> anúncios · confiança <%= h(stats[:confidence]) %></small><div><i style="width:<%= [stats[:count] * 5, 100].min %>%"></i></div></article>
+    <% end %>
+  </div>
 </section>
 
 <section class="stats-grid">
@@ -23,7 +32,7 @@
   </article>
   <article class="card raw-record">
     <span class="section-code">DADOS ORIGINAIS</span><h2>Registro do anúncio</h2>
-    <dl><dt>Preço original</dt><dd><%= h(@listing['price']) %></dd><dt>Vendedor</dt><dd><%= h(@listing['seller']) %></dd><dt>Moeda</dt><dd><%= h(@listing['currency']) %></dd><dt>Status</dt><dd><%= h(@listing['status']) %></dd></dl>
+    <dl><dt>Preço original</dt><dd><%= h(@listing['price']) %></dd><dt>Vendedor</dt><dd><a href="/seller/<%= CGI.escapeURIComponent(@listing['seller'].to_s) %>"><%= h(@listing['seller']) %></a></dd><dt>Moeda</dt><dd><%= h(@listing['currency']) %></dd><dt>Status</dt><dd><%= h(@listing['status']) %></dd></dl>
     <p class="raw-line"><%= h(@listing['raw_chat']) %></p>
     <a class="button-link secondary-link" href="/dashboard">Voltar ao mercado</a>
   </article>
