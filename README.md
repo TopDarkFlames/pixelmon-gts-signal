@@ -18,10 +18,9 @@ Sistema local que acompanha o `latest.log` do Pixelmon, detecta anúncios do GTS
 | --- | --- | --- |
 | Captura e notificações | Python | `gts_dm_bot.py` |
 | Painel web | Ruby, Sinatra e ERB | `panel.rb`, `views/` |
-| Atualização do feed | HTMX | `public/htmx.min.js` |
+| Atualização do feed | SSE e HTMX | `public/dashboard.js`, `public/htmx.min.js` |
 | Estilo | CSS | `public/styles.css` |
-| Banco de usuários | SQLite | `access_panel.db` |
-| Histórico GTS | CSV | `gts_history.csv` |
+| Usuários, histórico e fila | SQLite WAL | `access_panel.db` |
 | Hospedagem automática | Tailscale/Cloudflare | `iniciar_permanente.sh` |
 | Inicialização no boot | systemd | `systemd/pixelmon-gts.service` |
 
@@ -58,6 +57,7 @@ TELEGRAM_CHAT_ID=id_da_conversa
 
 PANEL_HOST=127.0.0.1
 PANEL_PORT=8080
+PANEL_DB_PATH=access_panel.db
 ```
 
 Nunca publique o arquivo `.env`.
@@ -148,10 +148,24 @@ Rotas principais:
 - `/login`: autenticação;
 - `/register`: solicitação de conta;
 - `/dashboard`: histórico ao vivo;
+- `/alerts`: monitores personalizados e resultados;
+- `/settings`: IDs privados do Discord e Telegram;
+- `/listing/:id`: detalhes e histórico de preço;
 - `/admin`: usuários, convites e aprovações;
+- `/forgot-password`: recuperação de senha;
 - `/health`: verificação do serviço.
 
-O painel oferece tema claro/escuro e preserva a escolha em cookie.
+O painel oferece tema claro/escuro, feed SSE sem polling constante, filtros por período e preço, detector de oportunidades, alertas por usuário, telemetria das integrações e recuperação de senha.
+
+Os anúncios e trabalhos de entrega ficam no SQLite. Falhas de Discord ou Telegram são tentadas novamente até cinco vezes e sobrevivem a reinicializações. O antigo `gts_history.csv` é importado de forma incremental por fingerprint, sem duplicar anúncios já migrados.
+
+## Testes
+
+```bash
+./testar.sh
+```
+
+Os testes cobrem o parser, moedas, deduplicação, alertas, fila persistente, migração e renderização das rotas Sinatra.
 
 ## Arquivos importantes
 
@@ -159,7 +173,7 @@ Não apague:
 
 - `.env`;
 - `access_panel.db`;
-- `gts_history.csv`;
+- `gts_history.csv` enquanto a migração não tiver sido confirmada;
 - `vendor/`;
 - `public/htmx.min.js`;
 - arquivos dentro de `views/` e `systemd/`.

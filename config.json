@@ -15,6 +15,7 @@
   },
   "history": {
     "enabled": true,
+    "database": "access_panel.db",
     "path": "gts_history.csv",
     "write_dry_run": false,
     "write_filtered": true

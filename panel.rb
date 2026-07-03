@@ -10,15 +10,14 @@ Gem.paths = {
 }
 require "base64"
 require "cgi"
-require "csv"
 require "json"
 require "net/smtp"
 require "openssl"
-require "pathname"
 require "securerandom"
 require "sinatra/base"
 require "sqlite3"
 require "time"
+require_relative "lib/gts_store"
 
 class PixelmonGTSPanel < Sinatra::Base
   ROOT = File.expand_path(__dir__)
@@ -27,6 +26,10 @@ class PixelmonGTSPanel < Sinatra::Base
   COOKIE_NAME = "gts_panel_session"
   PBKDF2_ITERATIONS = 260_000
   SESSION_TTL = 60 * 60 * 24 * 14
+  LOGIN_WINDOW = 15 * 60
+  LOGIN_MAX_FAILURES = 5
+  RESET_TTL = 60 * 60
+  FEED_PAGE_SIZE = 40
 
   configure do
     if File.exist?(ENV_PATH)
@@ -65,10 +68,12 @@ class PixelmonGTSPanel < Sinatra::Base
     end
 
     def db
-      database = SQLite3::Database.new(config_env("PANEL_DB_PATH", File.join(ROOT, "access_panel.db")))
-      database.results_as_hash = true
-      database.busy_timeout = 5_000
-      database
+      GTSStore.connect(database_path)
+    end
+
+    def database_path
+      configured = config_env("PANEL_DB_PATH", "access_panel.db")
+      File.absolute_path(configured, ROOT)
     end
 
     def with_db
@@ -169,6 +174,12 @@ class PixelmonGTSPanel < Sinatra::Base
           JOIN users ON users.id = sessions.user_id
           WHERE sessions.id = ? AND sessions.expires_at >= ?
         SQL
+        if @current_user
+          @nav_alert_count = database.get_first_value(
+            "SELECT COUNT(*) FROM alert_matches WHERE user_id = ? AND seen_at IS NULL",
+            [@current_user["id"]]
+          ).to_i
+        end
       end
     end
 
@@ -188,33 +199,121 @@ class PixelmonGTSPanel < Sinatra::Base
       halt 403, "Token CSRF inválido." if supplied.empty? || !secure_compare(supplied, expected)
     end
 
-    def history_path
-      config = File.exist?(CONFIG_PATH) ? JSON.parse(File.read(CONFIG_PATH, encoding: "UTF-8")) : {}
-      raw_path = config.dig("history", "path").to_s
-      raw_path = "gts_history.csv" if raw_path.empty?
-      Pathname.new(raw_path).absolute? ? raw_path : File.join(ROOT, raw_path)
-    rescue JSON::ParserError
-      File.join(ROOT, "gts_history.csv")
+    def feed_filter
+      type = params.fetch("type", "all").to_s
+      %w[all money token site].include?(type) ? type : "all"
     end
 
-    def recent_history(limit = 50)
-      path = history_path
-      return [] unless File.exist?(path)
-
-      rows = CSV.read(path, headers: true, encoding: "UTF-8").map(&:to_h)
-      rows.last(limit).reverse
-    rescue CSV::MalformedCSVError, Errno::ENOENT
-      []
+    def feed_page
+      [params.fetch("page", "1").to_i, 1].max
     end
 
-    def filtered_history(rows)
-      type = params.fetch("type", "all")
-      query = params.fetch("q", "").strip.downcase
-      rows.select do |row|
-        matches_type = type == "all" || row["price_type"] == type
-        searchable = "#{row['item']} #{row['seller']}".downcase
-        matches_type && (query.empty? || searchable.include?(query))
+    def feed_query
+      params.fetch("q", "").to_s.strip[0, 80]
+    end
+
+    def feed_period
+      value = params.fetch("period", "all").to_s
+      %w[1h 24h 7d 30d all].include?(value) ? value : "all"
+    end
+
+    def feed_sort
+      value = params.fetch("sort", "newest").to_s
+      %w[newest price_low price_high].include?(value) ? value : "newest"
+    end
+
+    def listing_rows(database, limit: FEED_PAGE_SIZE)
+      clauses = ["status = 'sent'"]
+      values = []
+      unless feed_filter == "all"
+        clauses << "price_type = ?"
+        values << feed_filter
       end
+      unless feed_query.empty?
+        clauses << "(item_key LIKE ? OR lower(seller) LIKE ?)"
+        search = "%#{GTSStore.fold(feed_query)}%"
+        values.concat([search, search])
+      end
+      seconds = { "1h" => 3_600, "24h" => 86_400, "7d" => 604_800, "30d" => 2_592_000 }[feed_period]
+      if seconds
+        clauses << "detected_at_epoch >= ?"
+        values << now - seconds
+      end
+      { "min" => ">=", "max" => "<=" }.each do |key, operator|
+        raw = params[key].to_s.strip
+        next if raw.empty?
+        numeric = Float(raw)
+        clauses << "amount_value #{operator} ?"
+        values << numeric
+      rescue ArgumentError
+        next
+      end
+      where = clauses.join(" AND ")
+      order = {
+        "newest" => "detected_at_epoch DESC",
+        "price_low" => "amount_value IS NULL, amount_value ASC, detected_at_epoch DESC",
+        "price_high" => "amount_value IS NULL, amount_value DESC, detected_at_epoch DESC"
+      }.fetch(feed_sort)
+      total = database.get_first_value("SELECT COUNT(*) FROM listings WHERE #{where}", values).to_i
+      rows = database.execute(
+        "SELECT * FROM listings WHERE #{where} ORDER BY #{order} LIMIT ? OFFSET ?",
+        values + [limit, (feed_page - 1) * limit]
+      )
+      [enrich_opportunities(database, rows), total]
+    end
+
+    def enrich_opportunities(database, rows)
+      history = database.execute(<<~SQL, [now - (30 * 86_400)])
+        SELECT item_key, price_type, amount_value FROM listings
+        WHERE status = 'sent' AND amount_value IS NOT NULL AND detected_at_epoch >= ?
+        ORDER BY detected_at_epoch DESC LIMIT 4000
+      SQL
+      medians = history.group_by { |row| [row["item_key"], row["price_type"]] }.to_h do |key, values|
+        prices = values.map { |row| row["amount_value"].to_f }.sort
+        midpoint = prices.length / 2
+        median = prices.length.odd? ? prices[midpoint] : (prices[midpoint - 1] + prices[midpoint]) / 2.0
+        [key, median]
+      end
+      rows.map do |row|
+        median = medians[[row["item_key"], row["price_type"]]]
+        discount = if median&.positive? && row["amount_value"]
+                     ((median - row["amount_value"].to_f) / median * 100).round
+                   end
+        row.merge("market_median" => median, "discount_percent" => discount, "deal" => discount && discount >= 15)
+      end
+    end
+
+    def dashboard_stats(database)
+      since = now - 86_400
+      counts = database.execute(
+        "SELECT price_type, COUNT(*) AS total FROM listings WHERE status='sent' AND detected_at_epoch >= ? GROUP BY price_type",
+        [since]
+      ).to_h { |row| [row["price_type"], row["total"].to_i] }
+      {
+        "total" => counts.values.sum,
+        "money" => counts.fetch("money", 0),
+        "token" => counts.fetch("token", 0),
+        "site" => counts.fetch("site", 0),
+        "queue" => database.get_first_value("SELECT COUNT(*) FROM notification_queue WHERE status IN ('pending','retry','processing')").to_i,
+        "alerts" => database.get_first_value("SELECT COUNT(*) FROM alert_matches WHERE user_id = ? AND seen_at IS NULL", [@current_user["id"]]).to_i
+      }
+    end
+
+    def system_health(database)
+      statuses = database.execute("SELECT * FROM service_status ORDER BY name").to_h { |row| [row["name"], row] }
+      site_url_path = File.join(ROOT, "runtime", "site_url.txt")
+      statuses["panel"] = { "name" => "panel", "status" => "online", "detail" => "Ruby/Puma", "updated_at" => now }
+      if File.file?(site_url_path)
+        statuses["tunnel"] = { "name" => "tunnel", "status" => "online", "detail" => File.read(site_url_path).strip, "updated_at" => File.mtime(site_url_path).to_i }
+      end
+      statuses
+    end
+
+    def format_number(value)
+      return "—" if value.nil?
+
+      whole, decimal = format("%.2f", value.to_f).split(".", 2)
+      "#{whole.reverse.scan(/.{1,3}/).join('.').reverse},#{decimal}"
     end
 
     def price_type(row)
@@ -245,6 +344,56 @@ class PixelmonGTSPanel < Sinatra::Base
       fallback.empty? ? [] : [fallback]
     end
 
+    def client_ip
+      forwarded = request.env["HTTP_CF_CONNECTING_IP"].to_s.split(",").first.to_s.strip
+      forwarded.empty? ? request.ip : forwarded
+    end
+
+    def login_blocked?(database, email)
+      failures = database.get_first_value(<<~SQL, [email, client_ip, now - LOGIN_WINDOW]).to_i
+        SELECT COUNT(*) FROM login_attempts
+        WHERE email = ? AND ip = ? AND succeeded = 0 AND created_at >= ?
+      SQL
+      failures >= LOGIN_MAX_FAILURES
+    end
+
+    def record_login_attempt(database, email, succeeded)
+      database.execute(
+        "INSERT INTO login_attempts(email, ip, succeeded, created_at) VALUES (?, ?, ?, ?)",
+        [email, client_ip, succeeded ? 1 : 0, now]
+      )
+      database.execute("DELETE FROM login_attempts WHERE created_at < ?", [now - (7 * 86_400)])
+    end
+
+    def send_email(recipients, subject, body)
+      recipients = Array(recipients).map(&:to_s).map(&:strip).reject(&:empty?)
+      smtp_host = config_env("SMTP_HOST")
+      smtp_user = config_env("SMTP_USER")
+      smtp_password = config_env("SMTP_PASSWORD")
+      from = config_env("SMTP_FROM", smtp_user)
+      if recipients.empty? || smtp_host.empty? || smtp_user.empty? || smtp_password.empty? || from.empty?
+        warn "\n=== EMAIL LOCAL: #{subject} ===\n#{body}=== FIM ===\n"
+        return false
+      end
+
+      message = <<~MAIL
+        From: #{from}
+        To: #{recipients.join(', ')}
+        Subject: #{subject}
+        MIME-Version: 1.0
+        Content-Type: text/plain; charset=UTF-8
+
+        #{body}
+      MAIL
+      smtp = Net::SMTP.new(smtp_host, Integer(config_env("SMTP_PORT", "587")))
+      smtp.enable_starttls if env_bool("SMTP_TLS", true)
+      smtp.start(smtp_host, smtp_user, smtp_password, :login) { |connection| connection.send_message(message, from, recipients) }
+      true
+    rescue StandardError => e
+      warn "Falha ao enviar email: #{e.message}"
+      false
+    end
+
     def notify_pending(user)
       token = CGI.escapeURIComponent(user["approval_token"])
       body = <<~BODY
@@ -258,30 +407,7 @@ class PixelmonGTSPanel < Sinatra::Base
         Recusar: #{request_base_url}/review?token=#{token}&decision=deny
       BODY
 
-      recipients = approval_recipients
-      smtp_host = config_env("SMTP_HOST")
-      smtp_user = config_env("SMTP_USER")
-      smtp_password = config_env("SMTP_PASSWORD")
-      from = config_env("SMTP_FROM", smtp_user)
-      if recipients.empty? || smtp_host.empty? || smtp_user.empty? || smtp_password.empty? || from.empty?
-        warn "\n=== APROVAÇÃO PENDENTE ===\n#{body}=== FIM ===\n"
-        return
-      end
-
-      message = <<~MAIL
-        From: #{from}
-        To: #{recipients.join(', ')}
-        Subject: Nova solicitacao de acesso ao Pixelmon GTS
-        MIME-Version: 1.0
-        Content-Type: text/plain; charset=UTF-8
-
-        #{body}
-      MAIL
-      smtp = Net::SMTP.new(smtp_host, Integer(config_env("SMTP_PORT", "587")))
-      smtp.enable_starttls if env_bool("SMTP_TLS", true)
-      smtp.start(smtp_host, smtp_user, smtp_password, :login) { |connection| connection.send_message(message, from, recipients) }
-    rescue StandardError => e
-      warn "Falha ao enviar email de aprovação: #{e.message}"
+      send_email(approval_recipients, "Nova solicitacao de acesso ao Pixelmon GTS", body)
     end
 
     def consume_invite(database, code)
@@ -303,8 +429,10 @@ class PixelmonGTSPanel < Sinatra::Base
       "X-Content-Type-Options" => "nosniff",
       "X-Frame-Options" => "DENY",
       "Referrer-Policy" => "same-origin",
+      "Permissions-Policy" => "camera=(), microphone=(), geolocation=()",
       "Content-Security-Policy" => "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'"
     )
+    headers("Strict-Transport-Security" => "max-age=31536000") if request.secure? || request.env["HTTP_X_FORWARDED_PROTO"] == "https"
     load_current_user
   end
 
@@ -328,13 +456,16 @@ class PixelmonGTSPanel < Sinatra::Base
     user = nil
     session_id = nil
     with_db do |database|
+      halt 429, page("Entrar", :login, message: "Muitas tentativas. Aguarde 15 minutos.") if login_blocked?(database, email)
       user = database.get_first_row("SELECT * FROM users WHERE email = ?", [email])
       unless user && valid_password?(password, user["password_hash"])
-        halt page("Entrar", :login, message: "Email ou senha inválidos.")
+        record_login_attempt(database, email, false)
+        halt 401, page("Entrar", :login, message: "Email ou senha inválidos.")
       end
-      halt page("Entrar", :login, message: "Conta ainda não aprovada.") unless user["status"] == "approved"
+      halt 403, page("Entrar", :login, message: "Conta ainda não aprovada.") unless user["status"] == "approved"
 
       session_id, = create_session(database, user["id"])
+      record_login_attempt(database, email, true)
       database.execute("UPDATE users SET last_login_at = ? WHERE id = ?", [now, user["id"]])
       log_event(database, "login", user["id"], email)
     end
@@ -383,6 +514,7 @@ class PixelmonGTSPanel < Sinatra::Base
 
   post "/logout" do
     if @current_user
+      csrf!
       with_db { |database| database.execute("DELETE FROM sessions WHERE id = ?", [@current_user["session_id"]]) }
     end
     clear_session_cookie
@@ -390,6 +522,7 @@ class PixelmonGTSPanel < Sinatra::Base
   end
 
   post "/theme" do
+    csrf! if @current_user
     next_theme = dark_theme? ? "light" : "dark"
     response.set_cookie(
       "gts_panel_theme",
@@ -407,19 +540,201 @@ class PixelmonGTSPanel < Sinatra::Base
 
   get "/dashboard" do
     approved!
-    @all_rows = recent_history
-    @rows = filtered_history(@all_rows)
-    @filter = params.fetch("type", "all")
-    @query = params.fetch("q", "")
+    with_db do |database|
+      @rows, @total_rows = listing_rows(database)
+      @stats = dashboard_stats(database)
+      @health = system_health(database)
+      @recent_matches = database.execute(<<~SQL, [@current_user["id"]])
+        SELECT alert_matches.*, listings.item, listings.price, listings.price_type
+        FROM alert_matches JOIN listings ON listings.id = alert_matches.listing_id
+        WHERE alert_matches.user_id = ? ORDER BY alert_matches.created_at DESC LIMIT 5
+      SQL
+    end
+    @filter = feed_filter
+    @query = feed_query
+    @page = feed_page
     page("Dashboard", :dashboard)
   end
 
   get "/feed" do
     approved!
-    @all_rows = recent_history
-    @rows = filtered_history(@all_rows)
-    @oob = true
+    with_db do |database|
+      @rows, @total_rows = listing_rows(database)
+      @stats = dashboard_stats(database)
+    end
+    @filter = feed_filter
+    @query = feed_query
+    @page = feed_page
+    @oob = params["oob"] != "0"
     erb :feed, layout: false
+  end
+
+  get "/stream" do
+    approved!
+    content_type "text/event-stream"
+    headers "Cache-Control" => "no-cache", "X-Accel-Buffering" => "no"
+    stream(:keep_open) do |output|
+      last_id = params.fetch("last_id", "0").to_i
+      last_heartbeat = Time.now.to_i
+      loop do
+        current_id = with_db { |database| database.get_first_value("SELECT COALESCE(MAX(id), 0) FROM listings WHERE status='sent'").to_i }
+        if current_id > last_id
+          output << "event: listing\ndata: #{JSON.generate(id: current_id)}\n\n"
+          last_id = current_id
+        elsif Time.now.to_i - last_heartbeat >= 15
+          output << ": heartbeat #{Time.now.to_i}\n\n"
+          last_heartbeat = Time.now.to_i
+        end
+        sleep 0.75
+      end
+    rescue IOError, Errno::EPIPE
+      output.close
+    end
+  end
+
+  get "/listing/:id" do
+    approved!
+    with_db do |database|
+      @listing = database.get_first_row("SELECT * FROM listings WHERE id = ? AND status='sent'", [params["id"].to_i])
+      halt 404, page("Não encontrado", :status, code: "404", title: "Anúncio não encontrado", message: "Este registro não existe mais.") unless @listing
+      @price_history = database.execute(<<~SQL, [@listing["item_key"], @listing["price_type"]])
+        SELECT * FROM listings WHERE item_key = ? AND price_type = ? AND status='sent' AND amount_value IS NOT NULL
+        ORDER BY detected_at_epoch DESC LIMIT 60
+      SQL
+      prices = @price_history.map { |row| row["amount_value"].to_f }.sort
+      midpoint = prices.length / 2
+      @price_stats = {
+        min: prices.min,
+        max: prices.max,
+        median: prices.empty? ? nil : (prices.length.odd? ? prices[midpoint] : (prices[midpoint - 1] + prices[midpoint]) / 2.0)
+      }
+    end
+    page("Detalhes", :listing)
+  end
+
+  get "/alerts" do
+    approved!
+    with_db do |database|
+      @alerts = database.execute("SELECT * FROM alerts WHERE user_id = ? ORDER BY created_at DESC", [@current_user["id"]])
+      @matches = database.execute(<<~SQL, [@current_user["id"]])
+        SELECT alert_matches.*, alerts.query, listings.item, listings.seller, listings.price, listings.price_type
+        FROM alert_matches
+        JOIN alerts ON alerts.id = alert_matches.alert_id
+        JOIN listings ON listings.id = alert_matches.listing_id
+        WHERE alert_matches.user_id = ? ORDER BY alert_matches.created_at DESC LIMIT 50
+      SQL
+      database.execute("UPDATE alert_matches SET seen_at = ? WHERE user_id = ? AND seen_at IS NULL", [now, @current_user["id"]])
+    end
+    page("Alertas", :alerts, message: nil)
+  end
+
+  post "/alerts" do
+    approved!
+    csrf!
+    query = params.fetch("query", "").strip[0, 80]
+    halt 422, page("Alertas", :status, code: "422", title: "Alerta inválido", message: "Informe um item, Pokémon ou vendedor.") if query.length < 2
+    price_type = %w[all money token site].include?(params["price_type"]) ? params["price_type"] : "all"
+    channels = ["site"]
+    channels << "discord" if params["discord"] == "1"
+    channels << "telegram" if params["telegram"] == "1"
+    minimum = params["min_amount"].to_s.strip
+    maximum = params["max_amount"].to_s.strip
+    with_db do |database|
+      database.execute(
+        "INSERT INTO alerts(user_id, query, price_type, min_amount, max_amount, channels, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [@current_user["id"], query, price_type, minimum.empty? ? nil : Float(minimum), maximum.empty? ? nil : Float(maximum), channels.join(","), now]
+      )
+      log_event(database, "alert_created", @current_user["id"], query)
+    end
+    redirect "/alerts"
+  rescue ArgumentError
+    halt 422, page("Alertas", :status, code: "422", title: "Preço inválido", message: "Use apenas números nos limites de preço.")
+  end
+
+  post "/alerts/:id" do
+    approved!
+    csrf!
+    with_db do |database|
+      if params["action"] == "delete"
+        database.execute("DELETE FROM alerts WHERE id = ? AND user_id = ?", [params["id"].to_i, @current_user["id"]])
+      else
+        database.execute("UPDATE alerts SET active = CASE active WHEN 1 THEN 0 ELSE 1 END WHERE id = ? AND user_id = ?", [params["id"].to_i, @current_user["id"]])
+      end
+      log_event(database, "alert_#{params['action']}", @current_user["id"], params["id"])
+    end
+    redirect "/alerts"
+  end
+
+  get "/settings" do
+    approved!
+    page("Preferências", :settings, message: nil)
+  end
+
+  post "/settings" do
+    approved!
+    csrf!
+    discord_id = params.fetch("discord_user_id", "").strip
+    telegram_id = params.fetch("telegram_chat_id", "").strip
+    halt 422, page("Preferências", :settings, message: "O ID do Discord deve conter apenas números.") unless discord_id.empty? || discord_id.match?(/\A\d{15,22}\z/)
+    halt 422, page("Preferências", :settings, message: "O ID do Telegram deve conter apenas números e sinal negativo opcional.") unless telegram_id.empty? || telegram_id.match?(/\A-?\d{5,20}\z/)
+    with_db do |database|
+      database.execute(
+        "UPDATE users SET discord_user_id=?, telegram_chat_id=?, notifications_enabled=? WHERE id=?",
+        [discord_id, telegram_id, params["notifications_enabled"] == "1" ? 1 : 0, @current_user["id"]]
+      )
+      log_event(database, "settings_updated", @current_user["id"])
+    end
+    redirect "/settings?saved=1"
+  end
+
+  get "/forgot-password" do
+    page("Recuperar senha", :forgot_password, message: nil)
+  end
+
+  post "/forgot-password" do
+    email = params.fetch("email", "").strip.downcase
+    with_db do |database|
+      user = database.get_first_row("SELECT * FROM users WHERE email = ? AND status='approved'", [email])
+      if user
+        token = SecureRandom.urlsafe_base64(32)
+        database.execute("DELETE FROM password_reset_tokens WHERE user_id = ?", [user["id"]])
+        database.execute(
+          "INSERT INTO password_reset_tokens(token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+          [token, user["id"], now + RESET_TTL, now]
+        )
+        send_email(email, "Recuperacao de senha do Pixelmon GTS", "Redefina sua senha em: #{request_base_url}/reset-password?token=#{CGI.escapeURIComponent(token)}\n")
+      end
+    end
+    page("Recuperar senha", :status, code: "OK", title: "Solicitação recebida", message: "Se o email estiver cadastrado, enviaremos um link de recuperação.")
+  end
+
+  get "/reset-password" do
+    @reset_token = params.fetch("token", "")
+    valid = with_db do |database|
+      database.get_first_value("SELECT 1 FROM password_reset_tokens WHERE token=? AND used_at IS NULL AND expires_at >= ?", [@reset_token, now])
+    end
+    halt 404, page("Link expirado", :status, code: "404", title: "Link inválido", message: "Solicite uma nova recuperação de senha.") unless valid
+    page("Nova senha", :reset_password, message: nil)
+  end
+
+  post "/reset-password" do
+    token = params.fetch("token", "")
+    password = params.fetch("password", "")
+    @reset_token = token
+    halt 422, page("Nova senha", :reset_password, message: "A senha precisa ter pelo menos 10 caracteres.") if password.length < 10
+    changed = with_db do |database|
+      reset = database.get_first_row("SELECT * FROM password_reset_tokens WHERE token=? AND used_at IS NULL AND expires_at >= ?", [token, now])
+      next false unless reset
+      database.transaction
+      database.execute("UPDATE users SET password_hash=? WHERE id=?", [hash_password(password), reset["user_id"]])
+      database.execute("UPDATE password_reset_tokens SET used_at=? WHERE token=?", [now, token])
+      database.execute("DELETE FROM sessions WHERE user_id=?", [reset["user_id"]])
+      log_event(database, "password_reset", reset["user_id"])
+      database.commit
+      true
+    end
+    halt 404, page("Link expirado", :status, code: "404", title: "Link inválido", message: "Solicite uma nova recuperação de senha.") unless changed
+    page("Senha alterada", :status, code: "OK", title: "Senha atualizada", message: "Você já pode entrar usando a nova senha.")
   end
 
   get "/admin" do
@@ -428,6 +743,12 @@ class PixelmonGTSPanel < Sinatra::Base
       @pending = database.execute("SELECT * FROM users WHERE status = 'pending' ORDER BY created_at DESC")
       @users = database.execute("SELECT * FROM users ORDER BY created_at DESC LIMIT 100")
       @invites = database.execute("SELECT * FROM invite_codes ORDER BY created_at DESC LIMIT 50")
+      @events = database.execute(<<~SQL)
+        SELECT events.*, users.name AS user_name FROM events
+        LEFT JOIN users ON users.id = events.user_id ORDER BY events.created_at DESC LIMIT 30
+      SQL
+      @queue_summary = database.execute("SELECT status, COUNT(*) AS total FROM notification_queue GROUP BY status").to_h { |row| [row["status"], row["total"].to_i] }
+      @health = system_health(database)
     end
     page("Admin", :admin)
   end
@@ -435,14 +756,23 @@ class PixelmonGTSPanel < Sinatra::Base
   post "/admin/user" do
     admin!
     csrf!
-    status = { "approve" => "approved", "deny" => "denied" }[params["action"]]
-    halt 400, "Ação inválida." unless status
+    action = params["action"].to_s
+    halt 400, "Ação inválida." unless %w[approve deny revoke promote demote].include?(action)
+    target_id = params["user_id"].to_i
+    halt 422, "Você não pode alterar sua própria conta por aqui." if target_id == @current_user["id"].to_i
     with_db do |database|
-      database.execute(
-        "UPDATE users SET status = ?, approved_at = ? WHERE id = ? AND role != 'admin'",
-        [status, status == "approved" ? now : nil, params["user_id"].to_i]
-      )
-      log_event(database, "user_#{status}", params["user_id"].to_i)
+      case action
+      when "approve"
+        database.execute("UPDATE users SET status='approved', approved_at=? WHERE id=?", [now, target_id])
+      when "deny", "revoke"
+        database.execute("UPDATE users SET status='denied', approved_at=NULL WHERE id=?", [target_id])
+        database.execute("DELETE FROM sessions WHERE user_id=?", [target_id])
+      when "promote"
+        database.execute("UPDATE users SET role='admin', status='approved', approved_at=COALESCE(approved_at, ?) WHERE id=?", [now, target_id])
+      when "demote"
+        database.execute("UPDATE users SET role='user' WHERE id=?", [target_id])
+      end
+      log_event(database, "user_#{action}", target_id)
     end
     redirect "/admin"
   end
@@ -471,7 +801,7 @@ class PixelmonGTSPanel < Sinatra::Base
       user = database.get_first_row("SELECT * FROM users WHERE approval_token = ?", [token])
       halt 404, "Solicitação não encontrada." unless user
       database.execute(
-        "UPDATE users SET status = ?, approved_at = ? WHERE id = ?",
+        "UPDATE users SET status = ?, approved_at = ?, approval_token = NULL WHERE id = ?",
         [status, status == "approved" ? now : nil, user["id"]]
       )
       log_event(database, "email_#{status}", user["id"], user["email"])
@@ -492,29 +822,9 @@ class PixelmonGTSPanel < Sinatra::Base
   end
 
   def self.init_database!
-    database = SQLite3::Database.new(ENV.fetch("PANEL_DB_PATH", File.join(ROOT, "access_panel.db")))
-    database.execute_batch(<<~SQL)
-      PRAGMA journal_mode = WAL;
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
-        password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'pending',
-        invite_code TEXT, approval_token TEXT UNIQUE, created_at INTEGER NOT NULL, approved_at INTEGER, last_login_at INTEGER
-      );
-      CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, csrf_token TEXT NOT NULL,
-        created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id)
-      );
-      CREATE TABLE IF NOT EXISTS invite_codes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL UNIQUE, note TEXT,
-        max_uses INTEGER NOT NULL DEFAULT 1, used_count INTEGER NOT NULL DEFAULT 0,
-        active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, expires_at INTEGER
-      );
-      CREATE TABLE IF NOT EXISTS events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, user_id INTEGER, details TEXT, created_at INTEGER NOT NULL
-      );
-    SQL
-  ensure
-    database&.close
+    configured = ENV.fetch("PANEL_DB_PATH", "access_panel.db")
+    path = File.absolute_path(configured, ROOT)
+    GTSStore.initialize!(path: path, csv_path: File.join(ROOT, "gts_history.csv"))
   end
 end
 

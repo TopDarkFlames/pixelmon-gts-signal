@@ -12,21 +12,29 @@ O Pixelmon GTS Signal está em desenvolvimento ativo. O foco atual é transforma
 - Dashboard HTMX responsivo com tema claro e escuro.
 - Inicialização automática e recuperação por `systemd`.
 - Tailscale Funnel com contingência automática via Cloudflare.
+- Histórico consolidado no SQLite em modo WAL.
+- Fila persistente com retry para Discord e Telegram.
+- Deduplicação entre reinicializações.
+- Alertas por item, vendedor, moeda e faixa de preço.
+- IDs de entrega configuráveis por usuário.
+- Histórico e detector de oportunidade por mediana de preço.
+- Feed em tempo real por SSE, sem polling fixo.
+- Indicadores de saúde e fila no painel administrativo.
+- Recuperação de senha e limite de tentativas de login.
+- Testes automatizados do parser, banco, fila e rotas Sinatra.
 
 ## Em andamento
 
-- Migrar o histórico de CSV para SQLite.
-- Criar uma fila persistente de notificações com tentativas automáticas.
-- Melhorar a deduplicação de anúncios repetidos.
-- Exibir a saúde das integrações no painel.
+- Ajustar o detector de oportunidade com dados reais de cada moeda.
+- Melhorar a observabilidade do túnel público.
+- Ampliar a cobertura de testes de email e falhas das APIs externas.
 
 ## Planejado
 
-- Alertas personalizados por Pokémon, moeda e faixa de preço.
 - Favoritos e filtros salvos por usuário.
-- Gráficos de preço e volume de anúncios.
-- Atualização em tempo real com SSE.
-- Recuperação de senha e proteção contra tentativas excessivas de login.
-- Testes automatizados do parser, autenticação e integrações.
+- Relatórios semanais de preço e volume.
+- Exportação de histórico por período.
+- Notificações web via PWA.
+- Autenticação opcional por passkey.
 
 As prioridades podem mudar conforme o formato do GTS e o uso real do painel evoluírem.

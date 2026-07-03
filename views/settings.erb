@@ -1,0 +1,13 @@
+<section class="dashboard-head compact-head"><div><span class="eyebrow">CONTA / ENTREGA</span><h1>Preferências</h1><p>Conecte seus destinos privados para receber os alertas personalizados.</p></div></section>
+<section class="card narrow settings-card">
+  <span class="section-code">CANAIS PESSOAIS</span><h2>Notificações</h2>
+  <% if params['saved'] == '1' %><p class="success-notice">Preferências atualizadas.</p><% end %>
+  <% if message %><p class="notice"><%= h(message) %></p><% end %>
+  <form method="post" action="/settings" class="stack-form">
+    <input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>">
+    <label>ID do usuário no Discord<input name="discord_user_id" inputmode="numeric" value="<%= h(@current_user['discord_user_id']) %>" placeholder="Seu ID numérico"></label>
+    <label>ID do chat no Telegram<input name="telegram_chat_id" inputmode="numeric" value="<%= h(@current_user['telegram_chat_id']) %>" placeholder="ID recebido pelo bot"></label>
+    <label class="toggle-row"><input type="checkbox" name="notifications_enabled" value="1" <%= 'checked' if @current_user['notifications_enabled'].to_i == 1 %>><span>Permitir entregas externas dos meus alertas</span></label>
+    <button type="submit">Salvar preferências</button>
+  </form>
+</section>

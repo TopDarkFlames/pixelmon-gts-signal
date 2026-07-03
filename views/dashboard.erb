@@ -1,24 +1,43 @@
+<% watcher = @health["log_watcher"] %>
+<% live = watcher && watcher["status"] == "online" && now - watcher["updated_at"].to_i < 15 %>
 <section class="dashboard-head">
   <div>
     <span class="eyebrow">MARKET INTELLIGENCE / LIVE</span>
     <h1>Global Trade Signal</h1>
-    <p>Fluxo do GTS Global processado em tempo real.</p>
+    <p>Ofertas, oportunidades e alertas do GTS Global em um único fluxo.</p>
   </div>
-  <div class="live-state"><i></i><span><strong>ONLINE</strong> sincronizando agora</span></div>
+  <div id="live-state" class="live-state <%= live ? '' : 'is-stale' %>" data-stream-state>
+    <i></i><span><strong><%= live ? 'AO VIVO' : 'RECONECTANDO' %></strong><%= live ? 'log sincronizada' : 'aguardando o coletor' %></span>
+  </div>
 </section>
 
-<section class="stats-grid" aria-label="Resumo das últimas ofertas">
-  <article class="stat stat-total"><span>Capturas recentes</span><strong><span id="stat-total"><%= @all_rows.length %></span></strong><small>janela atual</small></article>
-  <article class="stat stat-money"><span>PokéCoins</span><strong><span id="stat-money"><%= @all_rows.count { |row| row["price_type"] == "money" } %></span></strong><small>ofertas detectadas</small></article>
-  <article class="stat stat-token"><span>Tokens</span><strong><span id="stat-token"><%= @all_rows.count { |row| row["price_type"] == "token" } %></span></strong><small>ofertas detectadas</small></article>
-  <article class="stat stat-site"><span>Saldo no site</span><strong><span id="stat-site"><%= @all_rows.count { |row| row["price_type"] == "site" } %></span></strong><small>ofertas detectadas</small></article>
+<section class="stats-grid" aria-label="Resumo das últimas 24 horas">
+  <article class="stat stat-total"><span>Últimas 24 horas</span><strong id="stat-total"><%= @stats["total"] %></strong><small>anúncios capturados</small></article>
+  <article class="stat stat-money"><span>PokéCoins</span><strong id="stat-money"><%= @stats["money"] %></strong><small>ofertas detectadas</small></article>
+  <article class="stat stat-token"><span>Tokens</span><strong id="stat-token"><%= @stats["token"] %></strong><small>ofertas detectadas</small></article>
+  <article class="stat stat-site"><span>Saldo no site</span><strong id="stat-site"><%= @stats["site"] %></strong><small>ofertas detectadas</small></article>
+</section>
+
+<section class="operations-strip">
+  <div><span>Alertas novos</span><strong id="stat-alerts"><%= @stats["alerts"] %></strong><a href="/alerts">abrir central</a></div>
+  <div><span>Fila de entrega</span><strong id="stat-queue"><%= @stats["queue"] %></strong><small><%= @stats["queue"].zero? ? 'tudo entregue' : 'processando' %></small></div>
+  <% %w[discord telegram tunnel].each do |service| %>
+    <% state = @health[service] %>
+    <% healthy = state && state["status"] == "online" && now - state["updated_at"].to_i < (service == "tunnel" ? 86_400 : 300) %>
+    <div class="service-state <%= healthy ? 'healthy' : 'unknown' %>"><span><%= service.capitalize %></span><strong><%= healthy ? 'OK' : '—' %></strong><small><%= state ? h(state["detail"].to_s[0, 42]) : 'sem telemetria' %></small></div>
+  <% end %>
 </section>
 
 <section class="market-panel">
   <div class="panel-heading">
-    <div><span class="section-code">FEED 01</span><h2>Últimos anúncios</h2></div>
-    <form id="feed-controls" class="feed-tools" hx-get="/feed" hx-target="#feed-table" hx-swap="outerHTML" hx-trigger="input changed delay:250ms, change">
-      <label class="search-box"><span>BUSCAR</span><input name="q" type="search" placeholder="Pokémon ou vendedor" value="<%= h(@query) %>"></label>
+    <div><span class="section-code">FEED 01 / <%= @total_rows %> RESULTADOS</span><h2>Mercado em tempo real</h2></div>
+    <form id="feed-controls" class="feed-tools" hx-get="/feed" hx-target="#feed-table" hx-swap="outerHTML" hx-trigger="input changed delay:300ms, change">
+      <input type="hidden" name="oob" value="1">
+      <label class="search-box"><span>BUSCAR</span><input name="q" type="search" placeholder="Pokémon, item ou vendedor" value="<%= h(@query) %>"></label>
+      <label class="compact-field"><span>PERÍODO</span><select name="period"><% [["all","Tudo"],["1h","1 hora"],["24h","24 horas"],["7d","7 dias"],["30d","30 dias"]].each do |value,label| %><option value="<%= value %>" <%= 'selected' if params.fetch('period','all') == value %>><%= label %></option><% end %></select></label>
+      <label class="compact-field"><span>ORDENAR</span><select name="sort"><% [["newest","Mais recentes"],["price_low","Menor preço"],["price_high","Maior preço"]].each do |value,label| %><option value="<%= value %>" <%= 'selected' if params.fetch('sort','newest') == value %>><%= label %></option><% end %></select></label>
+      <label class="compact-field price-field"><span>PREÇO MÍN.</span><input name="min" type="number" min="0" step="0.01" value="<%= h(params['min']) %>"></label>
+      <label class="compact-field price-field"><span>PREÇO MÁX.</span><input name="max" type="number" min="0" step="0.01" value="<%= h(params['max']) %>"></label>
       <fieldset class="segments">
         <legend class="sr-only">Filtrar por moeda</legend>
         <% [["all", "Todos"], ["money", "PokéCoins"], ["token", "Tokens"], ["site", "Site"]].each do |value, label| %>

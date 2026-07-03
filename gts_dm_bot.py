@@ -2,17 +2,17 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -28,7 +28,6 @@ DISCORD_API = "https://discord.com/api/v10"
 TELEGRAM_API = "https://api.telegram.org"
 DISCORD_TIMEOUT_SECONDS = 8
 TELEGRAM_TIMEOUT_SECONDS = 6
-NOTIFICATION_WORKERS = 4
 
 
 @dataclass(frozen=True)
@@ -40,6 +39,8 @@ class GtsListing:
     amount: str = ""
     currency: str = ""
     price_type: str = ""
+    fingerprint: str = ""
+    detected_at: str = ""
 
     @property
     def pokemon(self) -> str:
@@ -190,6 +191,8 @@ def parse_listing(log_line: str, patterns: list[re.Pattern[str]]) -> GtsListing 
                 amount=amount,
                 currency=currency,
                 price_type=price_type,
+                fingerprint=fingerprint_line(log_line),
+                detected_at=datetime.now(timezone.utc).isoformat(),
             )
 
     return None
@@ -311,8 +314,7 @@ def telegram_request(method: str, endpoint: str, payload: dict[str, Any] | None 
     return data
 
 
-def send_telegram_text(content: str) -> None:
-    chat_id = get_required_env("TELEGRAM_CHAT_ID")
+def send_telegram_chat_text(chat_id: str, content: str) -> None:
     payload = {
         "chat_id": chat_id,
         "text": truncate(content, 4000),
@@ -329,6 +331,10 @@ def send_telegram_text(content: str) -> None:
                 time.sleep(0.25 * (attempt + 1))
     if last_error:
         raise last_error
+
+
+def send_telegram_text(content: str) -> None:
+    send_telegram_chat_text(get_required_env("TELEGRAM_CHAT_ID"), content)
 
 
 def send_telegram_text_optional(content: str) -> None:
@@ -558,72 +564,311 @@ def history_config(config: dict[str, Any]) -> dict[str, Any]:
     return history if isinstance(history, dict) else {}
 
 
+def database_path(config: dict[str, Any]) -> Path:
+    configured = os.environ.get("PANEL_DB_PATH", "").strip()
+    if not configured:
+        configured = str(history_config(config).get("database", "access_panel.db"))
+    return config_path(config, configured, "access_panel.db")
+
+
+def database_connection(config: dict[str, Any]) -> sqlite3.Connection:
+    path = database_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path, timeout=5)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
+
+def ensure_storage(config: dict[str, Any]) -> None:
+    with database_connection(config) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+              password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'pending',
+              invite_code TEXT, approval_token TEXT UNIQUE, created_at INTEGER NOT NULL,
+              approved_at INTEGER, last_login_at INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS listings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint TEXT NOT NULL UNIQUE,
+              detected_at TEXT NOT NULL, detected_at_epoch INTEGER NOT NULL, status TEXT, reason TEXT,
+              item TEXT NOT NULL, item_key TEXT NOT NULL, seller TEXT, amount TEXT, amount_value REAL,
+              currency TEXT, price_type TEXT, price TEXT, raw_chat TEXT, created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_listings_detected ON listings(detected_at_epoch DESC);
+            CREATE INDEX IF NOT EXISTS idx_listings_type_detected ON listings(price_type, detected_at_epoch DESC);
+            CREATE INDEX IF NOT EXISTS idx_listings_item ON listings(item_key, price_type, detected_at_epoch DESC);
+            CREATE TABLE IF NOT EXISTS alerts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, query TEXT NOT NULL,
+              price_type TEXT NOT NULL DEFAULT 'all', min_amount REAL, max_amount REAL,
+              channels TEXT NOT NULL DEFAULT 'site', active INTEGER NOT NULL DEFAULT 1,
+              created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS alert_matches (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, alert_id INTEGER NOT NULL, listing_id INTEGER NOT NULL,
+              user_id INTEGER NOT NULL, created_at INTEGER NOT NULL, seen_at INTEGER,
+              UNIQUE(alert_id, listing_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_alert_matches_user ON alert_matches(user_id, seen_at, created_at DESC);
+            CREATE TABLE IF NOT EXISTS notification_queue (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, listing_id INTEGER NOT NULL, alert_id INTEGER NOT NULL DEFAULT 0,
+              channel TEXT NOT NULL, destination TEXT NOT NULL, payload TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+              next_attempt_at INTEGER NOT NULL, last_error TEXT, created_at INTEGER NOT NULL, sent_at INTEGER,
+              UNIQUE(listing_id, alert_id, channel, destination)
+            );
+            CREATE INDEX IF NOT EXISTS idx_notification_queue_ready ON notification_queue(status, next_attempt_at);
+            CREATE TABLE IF NOT EXISTS service_status (
+              name TEXT PRIMARY KEY, status TEXT NOT NULL, detail TEXT, updated_at INTEGER NOT NULL
+            );
+            """
+        )
+        user_columns = {row[1] for row in connection.execute("PRAGMA table_info(users)")}
+        for name, definition in {
+            "discord_user_id": "TEXT",
+            "telegram_chat_id": "TEXT",
+            "notifications_enabled": "INTEGER NOT NULL DEFAULT 1",
+        }.items():
+            if name not in user_columns:
+                connection.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
+
+
+def update_service_status(config: dict[str, Any], name: str, status: str, detail: str = "") -> None:
+    try:
+        with database_connection(config) as connection:
+            connection.execute(
+                """
+                INSERT INTO service_status(name, status, detail, updated_at) VALUES (?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET status=excluded.status, detail=excluded.detail, updated_at=excluded.updated_at
+                """,
+                (name, status, truncate(detail, 500), int(time.time())),
+            )
+    except sqlite3.Error as exc:
+        print(f"[ERRO STATUS] {exc}", file=sys.stderr, flush=True)
+
+
+def listing_matches_alert(listing: GtsListing, alert: sqlite3.Row) -> bool:
+    searchable = fold_text(f"{listing.item} {listing.seller}")
+    if fold_text(str(alert["query"])) not in searchable:
+        return False
+    if alert["price_type"] not in {"", "all", listing.price_type}:
+        return False
+    amount = amount_to_float(listing.amount)
+    if alert["min_amount"] is not None and (amount is None or amount < float(alert["min_amount"])):
+        return False
+    if alert["max_amount"] is not None and (amount is None or amount > float(alert["max_amount"])):
+        return False
+    return True
+
+
+def enqueue_notification(
+    connection: sqlite3.Connection,
+    listing_id: int,
+    alert_id: int,
+    channel: str,
+    destination: str,
+    payload: dict[str, Any],
+) -> None:
+    if not destination:
+        return
+    timestamp = int(time.time())
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO notification_queue
+          (listing_id, alert_id, channel, destination, payload, status, next_attempt_at, created_at)
+        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+        """,
+        (listing_id, alert_id, channel, destination, json.dumps(payload, ensure_ascii=False), timestamp, timestamp),
+    )
+
+
+def enqueue_listing_notifications(
+    connection: sqlite3.Connection,
+    listing_id: int,
+    listing: GtsListing,
+    message: str,
+) -> None:
+    base_payload = {"listing": asdict(listing), "message": message, "alert": ""}
+    enqueue_notification(connection, listing_id, 0, "discord", os.environ.get("DISCORD_USER_ID", "").strip(), base_payload)
+    if telegram_enabled():
+        enqueue_notification(connection, listing_id, 0, "telegram", os.environ.get("TELEGRAM_CHAT_ID", "").strip(), base_payload)
+
+    alerts = connection.execute(
+        """
+        SELECT alerts.*, users.discord_user_id, users.telegram_chat_id
+        FROM alerts JOIN users ON users.id = alerts.user_id
+        WHERE alerts.active = 1 AND users.status = 'approved' AND users.notifications_enabled = 1
+        """
+    ).fetchall()
+    for alert in alerts:
+        if not listing_matches_alert(listing, alert):
+            continue
+        connection.execute(
+            "INSERT OR IGNORE INTO alert_matches(alert_id, listing_id, user_id, created_at) VALUES (?, ?, ?, ?)",
+            (alert["id"], listing_id, alert["user_id"], int(time.time())),
+        )
+        payload = {**base_payload, "alert": str(alert["query"])}
+        channels = {value.strip() for value in str(alert["channels"]).split(",")}
+        if "discord" in channels:
+            enqueue_notification(connection, listing_id, int(alert["id"]), "discord", str(alert["discord_user_id"] or ""), payload)
+        if "telegram" in channels:
+            enqueue_notification(connection, listing_id, int(alert["id"]), "telegram", str(alert["telegram_chat_id"] or ""), payload)
+
+
 def append_history(
     config: dict[str, Any],
     listing: GtsListing,
     status: str,
     reason: str = "",
     dry_run: bool = False,
-) -> None:
+) -> int | None:
     history = history_config(config)
     if not bool(history.get("enabled", True)):
-        return
+        return None
     if dry_run and not bool(history.get("write_dry_run", False)):
-        return
+        return None
     if status == "filtered" and not bool(history.get("write_filtered", True)):
-        return
+        return None
 
-    path = config_path(config, str(history.get("path", "gts_history.csv")), "gts_history.csv")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    file_exists = path.exists()
-    fieldnames = [
-        "detected_at",
-        "status",
-        "reason",
-        "item",
-        "seller",
-        "amount",
-        "currency",
-        "price_type",
-        "price",
-        "raw_chat",
-    ]
-
-    with path.open("a", encoding="utf-8", newline="") as history_file:
-        writer = csv.DictWriter(history_file, fieldnames=fieldnames)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(
-            {
-                "detected_at": datetime.now(timezone.utc).isoformat(),
-                "status": status,
-                "reason": reason,
-                "item": listing.item,
-                "seller": listing.seller,
-                "amount": listing.amount,
-                "currency": listing.currency,
-                "price_type": listing.price_type,
-                "price": listing.price,
-                "raw_chat": listing.raw_chat,
-            }
-        )
-
-
-def send_discord_listing(
-    config: dict[str, Any],
-    listing: GtsListing,
-    message: str,
-    token: str,
-    user_id: str,
-) -> None:
-    payload = build_discord_payload(config, listing, message)
+    detected_at = listing.detected_at or datetime.now(timezone.utc).isoformat()
+    fingerprint = listing.fingerprint or hashlib.sha256(f"{detected_at}\0{listing.raw_chat}".encode()).hexdigest()
     try:
-        send_dm_payload(token, user_id, payload)
-    except Exception as exc:
-        append_history(config, listing, "discord_error", str(exc))
-        print(f"[ERRO DISCORD] {exc}", file=sys.stderr, flush=True)
-        return
-    print(f"Enviado no Discord: {listing.item} por {listing.price}", flush=True)
+        detected_epoch = int(datetime.fromisoformat(detected_at.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        detected_epoch = int(time.time())
+
+    with database_connection(config) as connection:
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO listings
+              (fingerprint, detected_at, detected_at_epoch, status, reason, item, item_key, seller,
+               amount, amount_value, currency, price_type, price, raw_chat, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                fingerprint, detected_at, detected_epoch, status, reason, listing.item, fold_text(listing.item),
+                listing.seller, listing.amount, amount_to_float(listing.amount), listing.currency,
+                listing.price_type, listing.price, listing.raw_chat, int(time.time()),
+            ),
+        )
+        if cursor.rowcount == 0:
+            row = connection.execute("SELECT id FROM listings WHERE fingerprint = ?", (fingerprint,)).fetchone()
+            return int(row["id"]) if row else None
+        listing_id = int(cursor.lastrowid)
+        if status == "sent":
+            message = format_message(str(config.get("message_template", "GTS: {pokemon} por {price}")), listing)
+            enqueue_listing_notifications(connection, listing_id, listing, message)
+        connection.execute(
+            """
+            INSERT INTO service_status(name, status, detail, updated_at) VALUES ('last_listing', 'online', ?, ?)
+            ON CONFLICT(name) DO UPDATE SET status='online', detail=excluded.detail, updated_at=excluded.updated_at
+            """,
+            (f"{listing.item} | {listing.price}", int(time.time())),
+        )
+        return listing_id
+
+
+class NotificationQueueWorker:
+    def __init__(self, config: dict[str, Any], discord_token: str):
+        self.config = config
+        self.discord_token = discord_token
+        self.stop_event = threading.Event()
+        self.wake_event = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="gts-notification-queue", daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def wake(self) -> None:
+        self.wake_event.set()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self.wake_event.set()
+        self.thread.join(timeout=15)
+
+    def _claim(self) -> sqlite3.Row | None:
+        with database_connection(self.config) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT * FROM notification_queue
+                WHERE status IN ('pending', 'retry') AND next_attempt_at <= ? AND attempts < 5
+                ORDER BY created_at, id LIMIT 1
+                """,
+                (int(time.time()),),
+            ).fetchone()
+            if not row:
+                return None
+            connection.execute(
+                "UPDATE notification_queue SET status = 'processing', attempts = attempts + 1 WHERE id = ?",
+                (row["id"],),
+            )
+            return connection.execute("SELECT * FROM notification_queue WHERE id = ?", (row["id"],)).fetchone()
+
+    def _deliver(self, job: sqlite3.Row) -> None:
+        payload = json.loads(str(job["payload"]))
+        listing = GtsListing(**payload["listing"])
+        alert = str(payload.get("alert", "")).strip()
+        if job["channel"] == "discord":
+            discord_payload = build_discord_payload(self.config, listing, str(payload["message"]))
+            if alert:
+                discord_payload["content"] = f"🔔 **Alerta encontrado:** `{truncate(alert, 120)}`"
+                discord_payload["allowed_mentions"] = {"parse": []}
+            send_dm_payload(self.discord_token, str(job["destination"]), discord_payload)
+        elif job["channel"] == "telegram":
+            text = format_telegram_listing(listing)
+            if alert:
+                text = f"🔔 Alerta encontrado: {alert}\n\n{text}"
+            send_telegram_chat_text(str(job["destination"]), text)
+        else:
+            raise RuntimeError(f"Canal de notificação desconhecido: {job['channel']}")
+
+    def _finish(self, job: sqlite3.Row, error: Exception | None = None) -> None:
+        timestamp = int(time.time())
+        with database_connection(self.config) as connection:
+            if error is None:
+                connection.execute(
+                    "UPDATE notification_queue SET status='sent', sent_at=?, last_error=NULL WHERE id=?",
+                    (timestamp, job["id"]),
+                )
+                status, detail = "online", "última entrega concluída"
+            else:
+                attempts = int(job["attempts"])
+                next_status = "failed" if attempts >= 5 else "retry"
+                retry_at = timestamp + min(300, 2 ** attempts)
+                connection.execute(
+                    "UPDATE notification_queue SET status=?, next_attempt_at=?, last_error=? WHERE id=?",
+                    (next_status, retry_at, truncate(str(error), 500), job["id"]),
+                )
+                status, detail = "error", truncate(str(error), 300)
+            connection.execute(
+                """
+                INSERT INTO service_status(name, status, detail, updated_at) VALUES (?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET status=excluded.status, detail=excluded.detail, updated_at=excluded.updated_at
+                """,
+                (str(job["channel"]), status, detail, timestamp),
+            )
+
+    def _run(self) -> None:
+        with database_connection(self.config) as connection:
+            connection.execute("UPDATE notification_queue SET status='retry' WHERE status='processing'")
+        while not self.stop_event.is_set():
+            job = self._claim()
+            if not job:
+                self.wake_event.wait(1.0)
+                self.wake_event.clear()
+                continue
+            try:
+                self._deliver(job)
+            except Exception as exc:
+                self._finish(job, exc)
+                print(f"[ERRO {str(job['channel']).upper()}] {exc}", file=sys.stderr, flush=True)
+            else:
+                self._finish(job)
+                print(f"Enviado no {job['channel']}: fila #{job['id']}", flush=True)
 
 
 def fingerprint_line(line: str) -> str:
@@ -660,7 +905,6 @@ def follow_log(
     patterns: list[re.Pattern[str]],
     config: dict[str, Any],
     token: str,
-    user_id: str,
     dry_run: bool,
 ) -> None:
     log_path = resolve_log_path(log_path)
@@ -672,17 +916,22 @@ def follow_log(
     print_filtered = bool(config.get("print_filtered", False))
     seen: set[str] = set()
     max_seen = int(config.get("max_seen_lines", 2000))
+    ensure_storage(config)
 
     log_file = open_log_file(log_path, seek_to_end=not bool(config.get("read_from_start", False)))
-    notifications = ThreadPoolExecutor(
-        max_workers=NOTIFICATION_WORKERS,
-        thread_name_prefix="gts-notification",
-    )
+    notifications = None if dry_run else NotificationQueueWorker(config, token)
+    if notifications:
+        notifications.start()
+    last_heartbeat = 0.0
     try:
         print(f"Lendo log: {log_path}", flush=True)
         print("Aguardando anúncios do GTS. Ctrl+C para sair.", flush=True)
+        update_service_status(config, "log_watcher", "online", str(log_path))
 
         while True:
+            if time.monotonic() - last_heartbeat >= 5:
+                update_service_status(config, "log_watcher", "online", f"monitorando {log_path.name}")
+                last_heartbeat = time.monotonic()
             if should_reopen_log(log_path, log_file):
                 log_file.close()
                 log_file = open_log_file(log_path, seek_to_end=False)
@@ -717,12 +966,12 @@ def follow_log(
                 print(f"[DRY RUN] {message}")
             else:
                 append_history(config, listing, "sent")
-                notifications.submit(send_telegram_text_optional, format_telegram_listing(listing))
-                notifications.submit(send_discord_listing, config, listing, message, token, user_id)
+                notifications.wake() if notifications else None
                 print(f"Detectado e enfileirado: {listing.item} por {listing.price}", flush=True)
     finally:
+        update_service_status(config, "log_watcher", "offline", "processo encerrado")
         log_file.close()
-        notifications.shutdown(wait=True)
+        notifications.stop() if notifications else None
 
 
 def get_required_env(name: str) -> str:
@@ -836,7 +1085,6 @@ def main() -> int:
         patterns=patterns,
         config=config,
         token=token,
-        user_id=user_id,
         dry_run=args.dry_run,
     )
     return 0

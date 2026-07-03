@@ -1,0 +1,29 @@
+<section class="dashboard-head compact-head">
+  <div><span class="eyebrow">MARKET RECORD / #<%= @listing['id'] %></span><h1><%= h(@listing['item']) %></h1><p>Anunciado por <strong><%= h(@listing['seller']) %></strong> em <%= h(format_detected_at(@listing['detected_at'])) %>.</p></div>
+  <span class="currency currency-<%= price_type(@listing) %> hero-price"><%= h("#{@listing['amount']} #{@listing['currency']}".strip) %></span>
+</section>
+
+<section class="stats-grid stats-three">
+  <article class="stat"><span>Menor registrado</span><strong><%= format_number(@price_stats[:min]) %></strong><small>mesmo item e moeda</small></article>
+  <article class="stat stat-money"><span>Mediana</span><strong><%= format_number(@price_stats[:median]) %></strong><small><%= @price_history.length %> registros</small></article>
+  <article class="stat stat-token"><span>Maior registrado</span><strong><%= format_number(@price_stats[:max]) %></strong><small>janela disponível</small></article>
+</section>
+
+<section class="two-column-layout detail-layout">
+  <article class="card">
+    <span class="section-code">TRAJETÓRIA DE PREÇO</span><h2>Histórico recente</h2>
+    <div class="price-chart">
+      <% maximum = @price_stats[:max].to_f %>
+      <% @price_history.first(24).reverse_each do |row| %>
+        <% width = maximum.positive? ? [(row['amount_value'].to_f / maximum * 100).round, 4].max : 4 %>
+        <div title="<%= h(row['price']) %>"><span style="width:<%= width %>%"></span><small><%= h(format_detected_at(row['detected_at'])) %></small><strong><%= h(row['amount']) %></strong></div>
+      <% end %>
+    </div>
+  </article>
+  <article class="card raw-record">
+    <span class="section-code">DADOS ORIGINAIS</span><h2>Registro do anúncio</h2>
+    <dl><dt>Preço original</dt><dd><%= h(@listing['price']) %></dd><dt>Vendedor</dt><dd><%= h(@listing['seller']) %></dd><dt>Moeda</dt><dd><%= h(@listing['currency']) %></dd><dt>Status</dt><dd><%= h(@listing['status']) %></dd></dl>
+    <p class="raw-line"><%= h(@listing['raw_chat']) %></p>
+    <a class="button-link secondary-link" href="/dashboard">Voltar ao mercado</a>
+  </article>
+</section>

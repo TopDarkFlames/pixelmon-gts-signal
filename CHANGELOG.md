@@ -2,6 +2,27 @@
 
 Todas as mudanças relevantes deste projeto serão registradas aqui.
 
+## [0.2.0] - 2026-07-03
+
+### Adicionado
+
+- SQLite compartilhado para usuários, anúncios, alertas e entregas.
+- Migração automática do histórico CSV.
+- Fila persistente com retry exponencial para Discord e Telegram.
+- Alertas personalizados e destinos por usuário.
+- Feed SSE, paginação e filtros de período, preço e ordenação.
+- Histórico de preços e detector de ofertas abaixo da mediana.
+- Painel operacional com saúde das integrações e auditoria.
+- Recuperação de senha e gerenciamento completo de usuários.
+- Testes automatizados de Python, Ruby e rotas Sinatra.
+
+### Segurança
+
+- Limite de tentativas de login por email e IP.
+- Tokens de aprovação descartados após o uso.
+- Revogação de sessões quando acesso ou senha muda.
+- Cabeçalhos CSP, HSTS e Permissions Policy.
+
 ## [0.1.0] - 2026-07-03
 
 ### Adicionado

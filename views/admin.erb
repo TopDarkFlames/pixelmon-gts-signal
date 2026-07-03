@@ -1,6 +1,14 @@
 <section class="dashboard-head admin-head">
-  <div><span class="eyebrow">CONTROLE DE ACESSO / ADMIN</span><h1>Central de operadores</h1><p>Aprove contas, emita convites e acompanhe acessos.</p></div>
+  <div><span class="eyebrow">CONTROLE / OPERAÇÕES</span><h1>Central administrativa</h1><p>Acesso, entregas, serviços e auditoria em uma única visão.</p></div>
   <div class="admin-stamp"><strong><%= format("%02d", @pending.length) %></strong><span>pendentes</span></div>
+</section>
+
+<section class="operations-strip admin-operations">
+  <% %w[log_watcher discord telegram tunnel].each do |service| %>
+    <% state = @health[service] %><% healthy = state && state['status'] == 'online' %>
+    <div class="service-state <%= healthy ? 'healthy' : 'unknown' %>"><span><%= service.tr('_',' ').upcase %></span><strong><%= healthy ? 'ONLINE' : '—' %></strong><small><%= h(state ? state['detail'].to_s[0,45] : 'sem telemetria') %></small></div>
+  <% end %>
+  <div><span>FILA</span><strong><%= @queue_summary.fetch('pending', 0) + @queue_summary.fetch('retry', 0) %></strong><small><%= @queue_summary.fetch('failed', 0) %> falhas finais</small></div>
 </section>
 
 <section class="card">
@@ -8,35 +16,29 @@
   <% if @pending.empty? %><p class="empty-state">Nenhuma solicitação pendente.</p><% end %>
   <div class="list">
     <% @pending.each do |user| %>
-      <article class="user-row">
-        <div><strong><%= h(user["name"]) %></strong><span><%= h(user["email"]) %></span><small><%= h(user["role"]) %> · <%= h(user["status"]) %> · <%= format_utc(user["created_at"]) %></small></div>
-        <form method="post" action="/admin/user" class="actions">
-          <input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>">
-          <input type="hidden" name="user_id" value="<%= user['id'] %>">
-          <button name="action" value="approve" type="submit">Aprovar</button>
-          <button name="action" value="deny" type="submit" class="secondary">Recusar</button>
-        </form>
-      </article>
+      <article class="user-row"><div><strong><%= h(user['name']) %></strong><span><%= h(user['email']) %></span><small><%= format_utc(user['created_at']) %></small></div><form method="post" action="/admin/user" class="actions"><input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>"><input type="hidden" name="user_id" value="<%= user['id'] %>"><button name="action" value="approve">Aprovar</button><button name="action" value="deny" class="secondary">Recusar</button></form></article>
     <% end %>
   </div>
 </section>
 
 <section class="card">
   <span class="section-code">CREDENCIAL TEMPORÁRIA</span><h2>Novo convite</h2>
-  <form method="post" action="/admin/invite" class="inline-form">
-    <input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>">
-    <label>Observação<input name="note" placeholder="Ex.: amigo do servidor"></label>
-    <label>Usos<input name="max_uses" type="number" min="1" value="1"></label>
-    <button type="submit">Gerar convite</button>
-  </form>
-  <div class="table-wrap"><table><thead><tr><th>Código</th><th>Observação</th><th>Usos</th><th>Status</th></tr></thead><tbody>
-    <% @invites.each do |invite| %><tr><td><code><%= h(invite["code"]) %></code></td><td><%= h(invite["note"]) %></td><td><%= invite["used_count"] %>/<%= invite["max_uses"] %></td><td><%= invite["active"].to_i == 1 ? "ativo" : "inativo" %></td></tr><% end %>
-  </tbody></table></div>
+  <form method="post" action="/admin/invite" class="inline-form"><input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>"><label>Observação<input name="note" maxlength="80" placeholder="Ex.: amigo do servidor"></label><label>Usos<input name="max_uses" type="number" min="1" max="50" value="1"></label><button type="submit">Gerar convite</button></form>
+  <div class="table-wrap"><table><thead><tr><th>Código</th><th>Observação</th><th>Usos</th><th>Status</th></tr></thead><tbody><% @invites.each do |invite| %><tr><td><code><%= h(invite['code']) %></code></td><td><%= h(invite['note']) %></td><td><%= invite['used_count'] %>/<%= invite['max_uses'] %></td><td><%= invite['active'].to_i == 1 ? 'ativo' : 'inativo' %></td></tr><% end %></tbody></table></div>
 </section>
 
 <section class="card">
-  <span class="section-code">DIRETÓRIO</span><h2>Usuários recentes</h2>
+  <span class="section-code">DIRETÓRIO</span><h2>Usuários</h2>
   <div class="list compact">
-    <% @users.each do |user| %><article class="user-row"><div><strong><%= h(user["name"]) %></strong><span><%= h(user["email"]) %></span><small><%= h(user["role"]) %> · <%= h(user["status"]) %> · <%= format_utc(user["created_at"]) %></small></div></article><% end %>
+    <% @users.each do |user| %>
+      <article class="user-row"><div><strong><%= h(user['name']) %></strong><span><%= h(user['email']) %></span><small><%= h(user['role']) %> · <%= h(user['status']) %> · <%= format_utc(user['created_at']) %></small></div>
+        <% unless user['id'].to_i == @current_user['id'].to_i %><form method="post" action="/admin/user" class="actions"><input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>"><input type="hidden" name="user_id" value="<%= user['id'] %>"><% if user['status'] == 'approved' %><button name="action" value="revoke" class="secondary">Revogar</button><% else %><button name="action" value="approve">Aprovar</button><% end %><button name="action" value="<%= user['role'] == 'admin' ? 'demote' : 'promote' %>" class="secondary"><%= user['role'] == 'admin' ? 'Remover admin' : 'Tornar admin' %></button></form><% end %>
+      </article>
+    <% end %>
   </div>
+</section>
+
+<section class="card">
+  <span class="section-code">AUDITORIA</span><h2>Eventos recentes</h2>
+  <div class="audit-list"><% @events.each do |event| %><div><time><%= format_utc(event['created_at']) %></time><strong><%= h(event['type']) %></strong><span><%= h(event['user_name'] || 'sistema') %></span><small><%= h(event['details'].to_s[0,100]) %></small></div><% end %></div>
 </section>
