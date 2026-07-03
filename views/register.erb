@@ -1,0 +1,14 @@
+<section class="card narrow request-card">
+  <span class="section-code">NOVO OPERADOR</span>
+  <h1>Solicitar acesso</h1>
+  <p class="muted">Crie sua conta. Um administrador revisará a solicitação.</p>
+  <% if message %><p class="notice"><%= h(message) %></p><% end %>
+  <form method="post" action="/register">
+    <label>Nome<input name="name" required autocomplete="name" placeholder="Seu nome"></label>
+    <label>Email<input name="email" type="email" required autocomplete="email" placeholder="voce@email.com"></label>
+    <label>Senha<input name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="Mínimo de 8 caracteres"></label>
+    <label>Código de convite <span class="label-note">(<%= env_bool("PANEL_REQUIRE_INVITE_CODE") ? "obrigatório" : "opcional" %>)</span><input name="invite_code" autocomplete="off"></label>
+    <button type="submit">Enviar solicitação <span aria-hidden="true">→</span></button>
+  </form>
+  <p class="form-foot"><a href="/login">← Voltar para o login</a></p>
+</section>

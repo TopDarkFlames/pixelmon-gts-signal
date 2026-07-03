@@ -1,0 +1,29 @@
+<% if @oob %>
+  <span id="stat-total" hx-swap-oob="true"><%= @all_rows.length %></span>
+  <span id="stat-money" hx-swap-oob="true"><%= @all_rows.count { |row| row["price_type"] == "money" } %></span>
+  <span id="stat-token" hx-swap-oob="true"><%= @all_rows.count { |row| row["price_type"] == "token" } %></span>
+  <span id="stat-site" hx-swap-oob="true"><%= @all_rows.count { |row| row["price_type"] == "site" } %></span>
+<% end %>
+<div id="feed-table" hx-get="/feed" hx-trigger="every 1.5s" hx-include="#feed-controls" hx-swap="outerHTML">
+  <% if @rows.empty? %>
+    <p class="empty-state">Nenhum anúncio encontrado neste filtro.</p>
+  <% else %>
+    <div class="table-wrap">
+      <table class="market-table">
+        <thead><tr><th>Quando</th><th>Item/Pokémon</th><th>Vendedor</th><th>Preço</th><th>Status</th></tr></thead>
+        <tbody>
+          <% @rows.each do |row| %>
+            <% kind = price_type(row) %>
+            <tr data-type="<%= kind %>">
+              <td class="time-cell"><%= h(format_detected_at(row["detected_at"])) %></td>
+              <td><strong class="item-name"><%= h(row["item"]) %></strong><small class="mobile-seller">por <%= h(row["seller"]) %></small></td>
+              <td class="seller-cell"><%= h(row["seller"]) %></td>
+              <td><span class="currency currency-<%= kind %>"><%= h("#{row['amount']} #{row['currency']}".strip) %></span></td>
+              <td><span class="status-pill"><i></i><%= h(row["status"] || "capturado") %></span></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% end %>
+</div>

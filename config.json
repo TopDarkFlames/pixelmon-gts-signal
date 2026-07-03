@@ -1,0 +1,54 @@
+{
+  "read_from_start": false,
+  "poll_interval_seconds": 0.03,
+  "max_seen_lines": 2000,
+  "print_filtered": false,
+  "use_embeds": true,
+  "show_original_price": true,
+  "show_raw_log": false,
+  "embed_colors": {
+    "money": "#F1C40F",
+    "token": "#9B59B6",
+    "site": "#2ECC71",
+    "desconhecido": "#5865F2",
+    "default": "#5865F2"
+  },
+  "history": {
+    "enabled": true,
+    "path": "gts_history.csv",
+    "write_dry_run": false,
+    "write_filtered": true
+  },
+  "filters": {
+    "enabled": true,
+    "allowed_price_types": [],
+    "blocked_price_types": [],
+    "required_keywords": [],
+    "ignored_keywords": [],
+    "allowed_sellers": [],
+    "blocked_sellers": [],
+    "price_limits": {
+      "money": {
+        "min": null,
+        "max": null
+      },
+      "token": {
+        "min": null,
+        "max": null
+      },
+      "site": {
+        "min": null,
+        "max": null
+      }
+    }
+  },
+  "message_template": "GTS Global detectado\nItem/Pokémon: {item}\nQuantidade: {amount}\nTipo: {currency}\nPreço original: {price}\nVendedor: {seller}\nLinha: {raw_chat}",
+  "patterns": [
+    "\\bGTS\\s+Global\\b.*?(?P<seller>[A-Za-z0-9_]{2,16})\\s+added\\s+a[n]?\\s+(?P<item>.+?)\\s+to\\s+the\\s+global\\s+GTS\\s+for\\s+(?P<price_text>.+?)(?:!|$)",
+    "\\bGTS\\s+Global\\b.*?(?P<seller>[A-Za-z0-9_]{2,16})\\s+added\\s+(?P<item>.+?)\\s+to\\s+the\\s+global\\s+GTS\\s+for\\s+(?P<price_text>.+?)(?:!|$)",
+    "\\bGTS\\b.*?(?P<pokemon>[A-Za-z0-9 ._'-]+?)\\s+(?:was\\s+)?(?:listed|selling|vendendo)\\s+(?:por|for|a|at)?\\s*[$€£₽]?\\s*(?P<price>[0-9][0-9.,]*)",
+    "\\bGTS\\b.*?(?:colocou|postou|anunciou|listou|listed|selling|vendendo)\\s+(?P<pokemon>[A-Za-z0-9 ._'-]+?)\\s+(?:por|for|a|at)\\s+[$€£₽]?\\s*(?P<price>[0-9][0-9.,]*)",
+    "\\bGTS\\b.*?(?P<pokemon>[A-Za-z0-9 ._'-]+?)\\s+(?:por|for|a|at)\\s+[$€£₽]?\\s*(?P<price>[0-9][0-9.,]*)",
+    "\\b(?P<pokemon>[A-Za-z0-9 ._'-]+?)\\b.*?\\bGTS\\b.*?[$€£₽]?\\s*(?P<price>[0-9][0-9.,]*)"
+  ]
+}

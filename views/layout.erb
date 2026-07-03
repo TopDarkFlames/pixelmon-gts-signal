@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="<%= theme %>">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title><%= h(@title) %> · Pixelmon GTS Signal</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script defer src="/htmx.min.js"></script>
+</head>
+<body class="page-<%= h(@page_class) %>">
+  <header>
+    <a class="brand" href="<%= @current_user ? '/dashboard' : '/login' %>">
+      <span class="brand-sigil">G</span>
+      <span><strong>PIXELMON GTS</strong><small>SIGNAL NETWORK</small></span>
+    </a>
+    <nav>
+      <form method="post" action="/theme" class="theme-form">
+        <input type="hidden" name="return_to" value="<%= h(request.path_info) %>">
+        <button class="theme-toggle" type="submit" title="Ativar tema <%= dark_theme? ? 'claro' : 'escuro' %>">
+          <span class="theme-icon" aria-hidden="true"><%= dark_theme? ? '☀' : '◐' %></span>
+          <span class="theme-label">Tema <%= dark_theme? ? 'claro' : 'escuro' %></span>
+        </button>
+      </form>
+      <% if @current_user %>
+        <a href="/dashboard">Mercado</a>
+        <% if @current_user["role"] == "admin" %><a href="/admin">Admin</a><% end %>
+        <span class="user-chip"><%= h(@current_user["name"]) %></span>
+        <form method="post" action="/logout"><button class="link-button" type="submit">Sair</button></form>
+      <% else %>
+        <a href="/login">Entrar</a>
+        <a class="nav-cta" href="/register">Solicitar acesso</a>
+      <% end %>
+    </nav>
+  </header>
+  <main><%= yield %></main>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Segredos e configuração local
+.env
+
+# Dados privados e gerados
+access_panel.db
+access_panel.db-*
+gts_history.csv
+runtime/
+
+# Dependências e caches locais
+.bundle/
+vendor/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Sistema e editores
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/

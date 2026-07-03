@@ -1,0 +1,32 @@
+<section class="dashboard-head">
+  <div>
+    <span class="eyebrow">MARKET INTELLIGENCE / LIVE</span>
+    <h1>Global Trade Signal</h1>
+    <p>Fluxo do GTS Global processado em tempo real.</p>
+  </div>
+  <div class="live-state"><i></i><span><strong>ONLINE</strong> sincronizando agora</span></div>
+</section>
+
+<section class="stats-grid" aria-label="Resumo das últimas ofertas">
+  <article class="stat stat-total"><span>Capturas recentes</span><strong><span id="stat-total"><%= @all_rows.length %></span></strong><small>janela atual</small></article>
+  <article class="stat stat-money"><span>PokéCoins</span><strong><span id="stat-money"><%= @all_rows.count { |row| row["price_type"] == "money" } %></span></strong><small>ofertas detectadas</small></article>
+  <article class="stat stat-token"><span>Tokens</span><strong><span id="stat-token"><%= @all_rows.count { |row| row["price_type"] == "token" } %></span></strong><small>ofertas detectadas</small></article>
+  <article class="stat stat-site"><span>Saldo no site</span><strong><span id="stat-site"><%= @all_rows.count { |row| row["price_type"] == "site" } %></span></strong><small>ofertas detectadas</small></article>
+</section>
+
+<section class="market-panel">
+  <div class="panel-heading">
+    <div><span class="section-code">FEED 01</span><h2>Últimos anúncios</h2></div>
+    <form id="feed-controls" class="feed-tools" hx-get="/feed" hx-target="#feed-table" hx-swap="outerHTML" hx-trigger="input changed delay:250ms, change">
+      <label class="search-box"><span>BUSCAR</span><input name="q" type="search" placeholder="Pokémon ou vendedor" value="<%= h(@query) %>"></label>
+      <fieldset class="segments">
+        <legend class="sr-only">Filtrar por moeda</legend>
+        <% [["all", "Todos"], ["money", "PokéCoins"], ["token", "Tokens"], ["site", "Site"]].each do |value, label| %>
+          <input id="filter-<%= value %>" type="radio" name="type" value="<%= value %>" <%= "checked" if @filter == value %>>
+          <label for="filter-<%= value %>"><%= label %></label>
+        <% end %>
+      </fieldset>
+    </form>
+  </div>
+  <%= erb :feed, layout: false %>
+</section>

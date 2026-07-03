@@ -1,0 +1,24 @@
+<section class="auth-layout">
+  <div class="auth-copy">
+    <span class="eyebrow">GLOBAL TRADE SIGNAL / 01</span>
+    <h1>O mercado inteiro, no seu radar.</h1>
+    <p>Ofertas do GTS Global capturadas ao vivo, organizadas por moeda e prontas para você agir.</p>
+    <div class="signal-board" aria-hidden="true">
+      <span><i class="signal token"></i>TOKEN FEED</span>
+      <span><i class="signal money"></i>POKÉCOIN FEED</span>
+      <span><i class="signal site"></i>SITE BALANCE</span>
+    </div>
+  </div>
+  <section class="card auth-card">
+    <span class="section-code">ACESSO PRIVADO</span>
+    <h2>Entrar no painel</h2>
+    <p class="muted">Use sua conta aprovada.</p>
+    <% if message %><p class="notice"><%= h(message) %></p><% end %>
+    <form method="post" action="/login">
+      <label>Email<input name="email" type="email" required autocomplete="email" placeholder="voce@email.com"></label>
+      <label>Senha<input name="password" type="password" required autocomplete="current-password" placeholder="Sua senha"></label>
+      <button type="submit">Acessar radar <span aria-hidden="true">→</span></button>
+    </form>
+    <p class="form-foot">Ainda não tem acesso? <a href="/register">Solicitar convite</a></p>
+  </section>
+</section>
