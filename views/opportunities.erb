@@ -1,0 +1,41 @@
+<section class="dashboard-head opportunities-head">
+  <div><span class="eyebrow">PRICE INTELLIGENCE / 30 DIAS</span><h1>Central de oportunidades</h1><p>Anúncios pelo menos 15% abaixo da mediana recente, com três ou mais amostras comparáveis.</p></div>
+  <div class="opportunity-total"><strong><%= @opportunities.length %></strong><span>sinais ativos</span></div>
+</section>
+
+<section class="stats-grid opportunity-stats">
+  <article class="stat stat-total"><span>Todos os sinais</span><strong><%= @opportunities.length %></strong><small>últimos 30 dias</small></article>
+  <article class="stat stat-money"><span>PokéCoins</span><strong><%= @opportunity_summary.fetch('money', 0) %></strong><small>oportunidades</small></article>
+  <article class="stat stat-token"><span>Tokens</span><strong><%= @opportunity_summary.fetch('token', 0) %></strong><small>oportunidades</small></article>
+  <article class="stat stat-site"><span>Saldo no site</span><strong><%= @opportunity_summary.fetch('site', 0) %></strong><small>oportunidades</small></article>
+</section>
+
+<section class="market-panel">
+  <div class="panel-heading opportunity-toolbar">
+    <div><span class="section-code">RADAR / MAIOR DESCONTO PRIMEIRO</span><h2>Ofertas em destaque</h2></div>
+    <form method="get" action="/opportunities">
+      <fieldset class="segments">
+        <legend class="sr-only">Filtrar oportunidades por moeda</legend>
+        <% [["all", "Todos"], ["money", "PokéCoins"], ["token", "Tokens"], ["site", "Site"]].each do |value, label| %>
+          <input id="opportunity-<%= value %>" type="radio" name="type" value="<%= value %>" <%= "checked" if @filter == value %>>
+          <label for="opportunity-<%= value %>"><%= label %></label>
+        <% end %>
+      </fieldset>
+      <button type="submit">Aplicar</button>
+    </form>
+  </div>
+
+  <% if @opportunities.empty? %>
+    <p class="empty-state">Nenhuma oportunidade possui histórico suficiente neste filtro.</p>
+  <% else %>
+    <div class="opportunity-grid">
+      <% @opportunities.each do |row| %>
+        <article class="opportunity-card currency-border-<%= price_type(row) %>">
+          <div class="opportunity-score"><strong>↓ <%= row['discount_percent'] %>%</strong><span>abaixo da mediana</span></div>
+          <div class="opportunity-main"><span class="section-code"><%= h(row['price_type']) %> / <%= row['market_samples'] %> AMOSTRAS</span><h3><a href="/listing/<%= row['id'] %>"><%= h(row['item']) %></a></h3><p>por <strong><%= h(row['seller']) %></strong> · <%= h(format_detected_at(row['detected_at'])) %></p></div>
+          <dl><div><dt>Preço atual</dt><dd><%= h("#{row['amount']} #{row['currency']}".strip) %></dd></div><div><dt>Mediana</dt><dd><%= format_number(row['market_median']) %></dd></div><div><dt>Confiança</dt><dd class="confidence confidence-<%= confidence_class(row['market_confidence']) %>"><%= h(row['market_confidence']) %></dd></div></dl>
+        </article>
+      <% end %>
+    </div>
+  <% end %>
+</section>

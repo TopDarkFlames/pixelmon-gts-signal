@@ -3,10 +3,11 @@
   <span class="currency currency-<%= price_type(@listing) %> hero-price"><%= h("#{@listing['amount']} #{@listing['currency']}".strip) %></span>
 </section>
 
-<section class="stats-grid stats-three">
+<section class="stats-grid">
   <article class="stat"><span>Menor registrado</span><strong><%= format_number(@price_stats[:min]) %></strong><small>mesmo item e moeda</small></article>
-  <article class="stat stat-money"><span>Mediana</span><strong><%= format_number(@price_stats[:median]) %></strong><small><%= @price_history.length %> registros</small></article>
+  <article class="stat stat-money"><span>Mediana robusta</span><strong><%= format_number(@price_stats[:median]) %></strong><small><%= @price_stats[:outliers] %> extremos removidos</small></article>
   <article class="stat stat-token"><span>Maior registrado</span><strong><%= format_number(@price_stats[:max]) %></strong><small>janela disponível</small></article>
+  <article class="stat stat-site"><span>Confiança</span><strong class="confidence-text"><%= h(@price_stats[:confidence]) %></strong><small><%= @price_stats[:count] %> amostras válidas</small></article>
 </section>
 
 <section class="two-column-layout detail-layout">

@@ -28,6 +28,7 @@ DISCORD_API = "https://discord.com/api/v10"
 TELEGRAM_API = "https://api.telegram.org"
 DISCORD_TIMEOUT_SECONDS = 8
 TELEGRAM_TIMEOUT_SECONDS = 6
+GLOBAL_GTS_MARKER = re.compile(r"\bto\s+the\s+global\s+GTS\s+for\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -168,7 +169,7 @@ def parse_price_details(raw_price: str) -> tuple[str, str, str, str]:
 
 def parse_listing(log_line: str, patterns: list[re.Pattern[str]]) -> GtsListing | None:
     chat_text = extract_chat_text(log_line)
-    if "gts" not in chat_text.lower():
+    if not GLOBAL_GTS_MARKER.search(chat_text):
         return None
 
     for pattern in patterns:

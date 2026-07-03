@@ -28,6 +28,7 @@ module GTSStore
     database.execute_batch(schema_sql)
     ensure_columns(database, "users", USER_COLUMNS)
     import_csv(database, csv_path) if csv_path
+    quarantine_non_global_listings(database)
   ensure
     database&.close
   end
@@ -50,6 +51,13 @@ module GTSStore
   rescue CSV::MalformedCSVError, SQLite3::Exception => e
     database.rollback if database&.transaction_active?
     warn "Falha ao importar histórico CSV: #{e.message}"
+  end
+
+  def quarantine_non_global_listings(database)
+    database.execute(<<~SQL)
+      UPDATE listings SET status = 'invalid', reason = 'not_global_gts'
+      WHERE status = 'sent' AND lower(raw_chat) NOT LIKE '%to the global gts for%'
+    SQL
   end
 
   def insert_listing(database, row)

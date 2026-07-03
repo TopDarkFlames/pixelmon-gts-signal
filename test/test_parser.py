@@ -28,6 +28,16 @@ class ParserTest(unittest.TestCase):
         self.assertEqual("token", listing.price_type)
         self.assertEqual("4.00", listing.amount)
 
+    def test_ignores_local_gts_and_unrelated_lines(self):
+        invalid_lines = [
+            "[CHAT] [GTS] mamp added a Haunter to the GTS for $ 375,000.00 PokéCoins!",
+            "[CHAT] [GTS] auction starting for $ 1,000,000.00 PokéCoins!",
+            "[CHAT] jogador comentou que viu um Marshadow no GTS por 500000",
+        ]
+        for line in invalid_lines:
+            with self.subTest(line=line):
+                self.assertIsNone(bot.parse_listing(line, self.patterns))
+
     def test_sqlite_deduplication_and_alert_match(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "test.db"

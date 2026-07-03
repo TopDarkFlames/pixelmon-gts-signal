@@ -29,17 +29,36 @@ Dir.mktmpdir do |directory|
     "currency" => "PokéCoins", "price_type" => "money", "price" => "$ 4,000,000.00 PokéCoins",
     "raw_chat" => "[GTS Global] test"
   })
+  [10_000_000, 11_000_000, 12_000_000].each_with_index do |price, index|
+    GTSStore.insert_listing(database, {
+      "fingerprint" => "panel-history-#{index}", "detected_at" => (Time.now.utc - ((index + 1) * 60)).iso8601,
+      "status" => "sent", "item" => "Marshadow", "seller" => "SELLER#{index}", "amount" => price.to_s,
+      "currency" => "PokéCoins", "price_type" => "money", "price" => "$ #{price} PokéCoins",
+      "raw_chat" => "[GTS Global] history test #{index}"
+    })
+  end
+  latest_id = GTSStore.insert_listing(database, {
+    "fingerprint" => "panel-test-token", "detected_at" => (Time.now.utc + 1).iso8601, "status" => "sent",
+    "item" => "Chave Shiny", "seller" => "MURILO", "amount" => "4.00",
+    "currency" => "Tokens", "price_type" => "token", "price" => "Token 4.00 Tokens",
+    "raw_chat" => "[GTS Global] token test"
+  })
   database.close
 
   request = Rack::MockRequest.new(PixelmonGTSPanel)
   headers = { "HTTP_COOKIE" => "gts_panel_session=test-session" }
   assert_response(request.get("/health"), "/health")
   assert_response(request.get("/dashboard", headers), "/dashboard")
-  assert_response(request.get("/feed?type=money&period=24h", headers), "/feed")
+  filtered_feed = request.get("/feed?type=money&period=24h", headers)
+  assert_response(filtered_feed, "/feed")
+  raise "cursor LIVE não usa o último ID global" unless filtered_feed.body.include?("data-latest-id=\"#{latest_id}\"")
   version_response = request.get("/feed/version", headers)
   assert_response(version_response, "/feed/version")
-  raise "/feed/version retornou ID inválido" unless JSON.parse(version_response.body).fetch("id").to_i == listing_id
+  raise "/feed/version retornou ID inválido" unless JSON.parse(version_response.body).fetch("id").to_i == latest_id
   assert_response(request.get("/listing/#{listing_id}", headers), "/listing/:id")
+  opportunities = request.get("/opportunities", headers)
+  assert_response(opportunities, "/opportunities")
+  raise "central não destacou a oportunidade esperada" unless opportunities.body.include?("Marshadow") && opportunities.body.include?("62%")
   assert_response(request.get("/alerts", headers), "/alerts")
   assert_response(request.get("/settings", headers), "/settings")
   assert_response(request.get("/admin", headers), "/admin")

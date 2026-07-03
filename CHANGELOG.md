@@ -2,6 +2,20 @@
 
 Todas as mudanças relevantes deste projeto serão registradas aqui.
 
+## [0.2.1] - 2026-07-03
+
+### Corrigido
+
+- Parser agora exige o marcador completo do GTS Global e ignora anúncios locais.
+- Cursor LIVE acompanha o último ID global mesmo quando a tabela está filtrada.
+- Registros históricos falsos são isolados automaticamente.
+
+### Adicionado
+
+- Central de Oportunidades ordenada pelo desconto estimado.
+- Mediana robusta com remoção de extremos pelo intervalo interquartil.
+- Quantidade de amostras e nível de confiança em cada análise de preço.
+
 ## [0.2.0] - 2026-07-03
 
 ### Adicionado

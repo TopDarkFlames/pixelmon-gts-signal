@@ -268,19 +268,58 @@ class PixelmonGTSPanel < Sinatra::Base
         WHERE status = 'sent' AND amount_value IS NOT NULL AND detected_at_epoch >= ?
         ORDER BY detected_at_epoch DESC LIMIT 4000
       SQL
-      medians = history.group_by { |row| [row["item_key"], row["price_type"]] }.to_h do |key, values|
-        prices = values.map { |row| row["amount_value"].to_f }.sort
-        midpoint = prices.length / 2
-        median = prices.length.odd? ? prices[midpoint] : (prices[midpoint - 1] + prices[midpoint]) / 2.0
-        [key, median]
+      statistics = history.group_by { |row| [row["item_key"], row["price_type"]] }.to_h do |key, values|
+        [key, robust_price_stats(values.map { |row| row["amount_value"] })]
       end
       rows.map do |row|
-        median = medians[[row["item_key"], row["price_type"]]]
+        stats = statistics[[row["item_key"], row["price_type"]]] || robust_price_stats([])
+        median = stats[:median]
         discount = if median&.positive? && row["amount_value"]
                      ((median - row["amount_value"].to_f) / median * 100).round
                    end
-        row.merge("market_median" => median, "discount_percent" => discount, "deal" => discount && discount >= 15)
+        row.merge(
+          "market_median" => median,
+          "market_min" => stats[:min],
+          "market_max" => stats[:max],
+          "market_samples" => stats[:count],
+          "market_confidence" => stats[:confidence],
+          "market_outliers" => stats[:outliers],
+          "discount_percent" => discount,
+          "deal" => stats[:count] >= 3 && discount && discount >= 15
+        )
       end
+    end
+
+    def percentile(sorted_values, fraction)
+      return nil if sorted_values.empty?
+
+      position = (sorted_values.length - 1) * fraction
+      lower = sorted_values[position.floor]
+      upper = sorted_values[position.ceil]
+      lower + ((upper - lower) * (position - position.floor))
+    end
+
+    def robust_price_stats(values)
+      prices = values.compact.map(&:to_f).select(&:positive?).sort
+      filtered = prices
+      if prices.length >= 8
+        first_quartile = percentile(prices, 0.25)
+        third_quartile = percentile(prices, 0.75)
+        spread = third_quartile - first_quartile
+        minimum = first_quartile - (spread * 1.5)
+        maximum = third_quartile + (spread * 1.5)
+        without_outliers = prices.select { |price| price.between?(minimum, maximum) }
+        filtered = without_outliers if without_outliers.length >= 3
+      end
+      count = filtered.length
+      {
+        count: count,
+        min: filtered.min,
+        max: filtered.max,
+        median: percentile(filtered, 0.5),
+        outliers: prices.length - count,
+        confidence: count >= 20 ? "alta" : (count >= 8 ? "média" : (count >= 3 ? "baixa" : "insuficiente"))
+      }
     end
 
     def dashboard_stats(database)
@@ -314,6 +353,10 @@ class PixelmonGTSPanel < Sinatra::Base
 
       whole, decimal = format("%.2f", value.to_f).split(".", 2)
       "#{whole.reverse.scan(/.{1,3}/).join('.').reverse},#{decimal}"
+    end
+
+    def confidence_class(value)
+      { "alta" => "high", "média" => "medium", "baixa" => "low" }.fetch(value.to_s, "insufficient")
     end
 
     def price_type(row)
@@ -542,6 +585,7 @@ class PixelmonGTSPanel < Sinatra::Base
     approved!
     with_db do |database|
       @rows, @total_rows = listing_rows(database)
+      @feed_version = database.get_first_value("SELECT COALESCE(MAX(id), 0) FROM listings WHERE status='sent'").to_i
       @stats = dashboard_stats(database)
       @health = system_health(database)
       @recent_matches = database.execute(<<~SQL, [@current_user["id"]])
@@ -560,6 +604,7 @@ class PixelmonGTSPanel < Sinatra::Base
     approved!
     with_db do |database|
       @rows, @total_rows = listing_rows(database)
+      @feed_version = database.get_first_value("SELECT COALESCE(MAX(id), 0) FROM listings WHERE status='sent'").to_i
       @stats = dashboard_stats(database)
     end
     @filter = feed_filter
@@ -588,15 +633,32 @@ class PixelmonGTSPanel < Sinatra::Base
         SELECT * FROM listings WHERE item_key = ? AND price_type = ? AND status='sent' AND amount_value IS NOT NULL
         ORDER BY detected_at_epoch DESC LIMIT 60
       SQL
-      prices = @price_history.map { |row| row["amount_value"].to_f }.sort
-      midpoint = prices.length / 2
-      @price_stats = {
-        min: prices.min,
-        max: prices.max,
-        median: prices.empty? ? nil : (prices.length.odd? ? prices[midpoint] : (prices[midpoint - 1] + prices[midpoint]) / 2.0)
-      }
+      @price_stats = robust_price_stats(@price_history.map { |row| row["amount_value"] })
     end
     page("Detalhes", :listing)
+  end
+
+  get "/opportunities" do
+    approved!
+    @filter = feed_filter
+    with_db do |database|
+      clauses = ["status='sent'", "amount_value IS NOT NULL", "detected_at_epoch >= ?"]
+      values = [now - (30 * 86_400)]
+      unless @filter == "all"
+        clauses << "price_type = ?"
+        values << @filter
+      end
+      rows = database.execute(
+        "SELECT * FROM listings WHERE #{clauses.join(' AND ')} ORDER BY detected_at_epoch DESC LIMIT 1500",
+        values
+      )
+      @opportunities = enrich_opportunities(database, rows)
+                       .select { |row| row["deal"] }
+                       .sort_by { |row| [-row["discount_percent"].to_i, -row["detected_at_epoch"].to_i] }
+                       .first(100)
+      @opportunity_summary = @opportunities.group_by { |row| row["price_type"] }.transform_values(&:length)
+    end
+    page("Oportunidades", :opportunities)
   end
 
   get "/alerts" do

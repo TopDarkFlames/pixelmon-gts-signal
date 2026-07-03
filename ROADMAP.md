@@ -22,10 +22,13 @@ O Pixelmon GTS Signal está em desenvolvimento ativo. O foco atual é transforma
 - Indicadores de saúde e fila no painel administrativo.
 - Recuperação de senha e limite de tentativas de login.
 - Testes automatizados do parser, banco, fila e rotas Sinatra.
+- Parser estrito exclusivo para anúncios do GTS Global.
+- Central de Oportunidades com mediana robusta, amostragem e confiança.
+- Cursor LIVE global independente dos filtros do mercado.
 
 ## Em andamento
 
-- Ajustar o detector de oportunidade com dados reais de cada moeda.
+- Ajustar os limiares do detector com dados reais de cada moeda.
 - Melhorar a observabilidade do túnel público.
 - Ampliar a cobertura de testes de email e falhas das APIs externas.
 

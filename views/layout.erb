@@ -26,6 +26,7 @@
       </form>
         <% if @current_user %>
           <a href="/dashboard">Mercado</a>
+          <a href="/opportunities">Oportunidades</a>
           <a href="/alerts" class="nav-alerts">Alertas<% if @nav_alert_count.to_i.positive? %><b><%= @nav_alert_count %></b><% end %></a>
           <a href="/settings">Preferências</a>
           <% if @current_user["role"] == "admin" %><a href="/admin">Admin</a><% end %>

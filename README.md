@@ -117,6 +117,8 @@ Tipos reconhecidos:
 - Tokens;
 - Saldo no Site.
 
+O marcador completo é obrigatório. Mensagens do GTS local ou linhas que apenas mencionem “GTS” são descartadas antes da extração.
+
 Testar uma linha sem enviar notificações:
 
 ```bash
@@ -148,6 +150,7 @@ Rotas principais:
 - `/login`: autenticação;
 - `/register`: solicitação de conta;
 - `/dashboard`: histórico ao vivo;
+- `/opportunities`: anúncios abaixo da mediana com histórico suficiente;
 - `/alerts`: monitores personalizados e resultados;
 - `/settings`: IDs privados do Discord e Telegram;
 - `/listing/:id`: detalhes e histórico de preço;
@@ -156,6 +159,8 @@ Rotas principais:
 - `/health`: verificação do serviço.
 
 O painel oferece tema claro/escuro, atualização automática por versão, filtros por período e preço, detector de oportunidades, alertas por usuário, telemetria das integrações e recuperação de senha.
+
+A Central de Oportunidades usa até 30 dias de histórico, exige pelo menos três amostras comparáveis e remove valores extremos pelo intervalo interquartil quando existem oito ou mais registros. Cada sinal exibe quantidade de amostras e confiança baixa, média ou alta.
 
 Os anúncios e trabalhos de entrega ficam no SQLite. Falhas de Discord ou Telegram são tentadas novamente até cinco vezes e sobrevivem a reinicializações. O antigo `gts_history.csv` é importado de forma incremental por fingerprint, sem duplicar anúncios já migrados.
 
