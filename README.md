@@ -18,7 +18,7 @@ Sistema local que acompanha o `latest.log` do Pixelmon, detecta anúncios do GTS
 | --- | --- | --- |
 | Captura e notificações | Python | `gts_dm_bot.py` |
 | Painel web | Ruby, Sinatra e ERB | `panel.rb`, `views/` |
-| Atualização do feed | SSE e HTMX | `public/dashboard.js`, `public/htmx.min.js` |
+| Atualização do feed | HTMX e verificação incremental | `public/dashboard.js`, `public/htmx.min.js` |
 | Estilo | CSS | `public/styles.css` |
 | Usuários, histórico e fila | SQLite WAL | `access_panel.db` |
 | Hospedagem automática | Tailscale/Cloudflare | `iniciar_permanente.sh` |
@@ -155,7 +155,7 @@ Rotas principais:
 - `/forgot-password`: recuperação de senha;
 - `/health`: verificação do serviço.
 
-O painel oferece tema claro/escuro, feed SSE sem polling constante, filtros por período e preço, detector de oportunidades, alertas por usuário, telemetria das integrações e recuperação de senha.
+O painel oferece tema claro/escuro, atualização automática por versão, filtros por período e preço, detector de oportunidades, alertas por usuário, telemetria das integrações e recuperação de senha.
 
 Os anúncios e trabalhos de entrega ficam no SQLite. Falhas de Discord ou Telegram são tentadas novamente até cinco vezes e sobrevivem a reinicializações. O antigo `gts_history.csv` é importado de forma incremental por fingerprint, sem duplicar anúncios já migrados.
 

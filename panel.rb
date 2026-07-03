@@ -569,27 +569,14 @@ class PixelmonGTSPanel < Sinatra::Base
     erb :feed, layout: false
   end
 
-  get "/stream" do
+  get "/feed/version" do
     approved!
-    content_type "text/event-stream"
-    headers "Cache-Control" => "no-cache", "X-Accel-Buffering" => "no"
-    stream(:keep_open) do |output|
-      last_id = params.fetch("last_id", "0").to_i
-      last_heartbeat = Time.now.to_i
-      loop do
-        current_id = with_db { |database| database.get_first_value("SELECT COALESCE(MAX(id), 0) FROM listings WHERE status='sent'").to_i }
-        if current_id > last_id
-          output << "event: listing\ndata: #{JSON.generate(id: current_id)}\n\n"
-          last_id = current_id
-        elsif Time.now.to_i - last_heartbeat >= 15
-          output << ": heartbeat #{Time.now.to_i}\n\n"
-          last_heartbeat = Time.now.to_i
-        end
-        sleep 0.75
-      end
-    rescue IOError, Errno::EPIPE
-      output.close
+    content_type :json
+    headers "Cache-Control" => "no-store, max-age=0"
+    latest_id = with_db do |database|
+      database.get_first_value("SELECT COALESCE(MAX(id), 0) FROM listings WHERE status='sent'").to_i
     end
+    JSON.generate(id: latest_id, checked_at: now)
   end
 
   get "/listing/:id" do

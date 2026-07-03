@@ -18,7 +18,7 @@ O Pixelmon GTS Signal está em desenvolvimento ativo. O foco atual é transforma
 - Alertas por item, vendedor, moeda e faixa de preço.
 - IDs de entrega configuráveis por usuário.
 - Histórico e detector de oportunidade por mediana de preço.
-- Feed em tempo real por SSE, sem polling fixo.
+- Feed em tempo real por verificação incremental de baixo custo.
 - Indicadores de saúde e fila no painel administrativo.
 - Recuperação de senha e limite de tentativas de login.
 - Testes automatizados do parser, banco, fila e rotas Sinatra.

@@ -36,6 +36,9 @@ Dir.mktmpdir do |directory|
   assert_response(request.get("/health"), "/health")
   assert_response(request.get("/dashboard", headers), "/dashboard")
   assert_response(request.get("/feed?type=money&period=24h", headers), "/feed")
+  version_response = request.get("/feed/version", headers)
+  assert_response(version_response, "/feed/version")
+  raise "/feed/version retornou ID inválido" unless JSON.parse(version_response.body).fetch("id").to_i == listing_id
   assert_response(request.get("/listing/#{listing_id}", headers), "/listing/:id")
   assert_response(request.get("/alerts", headers), "/alerts")
   assert_response(request.get("/settings", headers), "/settings")

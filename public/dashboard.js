@@ -2,11 +2,11 @@
   "use strict";
 
   const feed = document.querySelector("#feed-table");
-  if (!feed || !window.EventSource) return;
+  if (!feed) return;
 
   const state = document.querySelector("[data-stream-state]");
-  let source;
-  let reconnectTimer;
+  let versionTimer;
+  let refreshPending = false;
 
   const setState = (online) => {
     if (!state) return;
@@ -14,28 +14,41 @@
     const strong = state.querySelector("strong");
     const detail = state.querySelector("span");
     if (strong) strong.textContent = online ? "AO VIVO" : "RECONECTANDO";
-    if (detail && detail.lastChild) detail.lastChild.textContent = online ? " log sincronizada" : " aguardando conexão";
+    if (detail && detail.lastChild) detail.lastChild.textContent = online ? " mercado sincronizado" : " verificando atualizações";
   };
 
-  const connect = () => {
-    const currentFeed = document.querySelector("#feed-table");
-    const lastId = currentFeed?.dataset.latestId || "0";
-    source = new EventSource(`/stream?last_id=${encodeURIComponent(lastId)}`);
-    source.addEventListener("open", () => setState(true));
-    source.addEventListener("listing", () => {
+  const refreshFeed = () => {
+    if (refreshPending) return;
+    refreshPending = true;
+    window.htmx?.trigger(document.body, "gts:refresh");
+    window.setTimeout(() => { refreshPending = false; }, 900);
+  };
+
+  const checkVersion = async () => {
+    if (document.hidden) return;
+    try {
+      const response = await fetch("/feed/version", {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { "Accept": "application/json" },
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      const currentFeed = document.querySelector("#feed-table");
+      const currentId = Number(currentFeed?.dataset.latestId || 0);
+      if (Number(data.id) > currentId) refreshFeed();
       setState(true);
-      window.htmx?.trigger(document.body, "gts:refresh");
-    });
-    source.addEventListener("error", () => {
+    } catch (_) {
       setState(false);
-      source.close();
-      clearTimeout(reconnectTimer);
-      reconnectTimer = setTimeout(connect, 2500);
-    });
+    }
   };
 
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && (!source || source.readyState === EventSource.CLOSED)) connect();
+    if (!document.hidden) checkVersion();
   });
-  connect();
+  versionTimer = window.setInterval(checkVersion, 1000);
+  window.addEventListener("pagehide", () => {
+    window.clearInterval(versionTimer);
+  });
+  checkVersion();
 })();

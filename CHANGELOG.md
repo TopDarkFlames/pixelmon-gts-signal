@@ -10,7 +10,7 @@ Todas as mudanças relevantes deste projeto serão registradas aqui.
 - Migração automática do histórico CSV.
 - Fila persistente com retry exponencial para Discord e Telegram.
 - Alertas personalizados e destinos por usuário.
-- Feed SSE, paginação e filtros de período, preço e ordenação.
+- Feed com atualização automática, paginação e filtros de período, preço e ordenação.
 - Histórico de preços e detector de ofertas abaixo da mediana.
 - Painel operacional com saúde das integrações e auditoria.
 - Recuperação de senha e gerenciamento completo de usuários.
