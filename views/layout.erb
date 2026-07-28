@@ -7,9 +7,9 @@
     <meta name="theme-color" content="#ef3340">
     <title><%= h(@title) %> · Pixelmon GTS Signal</title>
     <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/styles.css?v=6">
+    <link rel="stylesheet" href="/styles.css?v=7">
     <script defer src="/htmx.min.js"></script>
-    <script defer src="/dashboard.js?v=3"></script>
+    <script defer src="/dashboard.js?v=4"></script>
 </head>
 <body class="page-<%= h(@page_class) %>">
   <header>
@@ -29,6 +29,7 @@
         <% if @current_user %>
           <a href="/dashboard">Mercado</a>
           <a href="/history">Histórico</a>
+          <a href="/textures">Texturas</a>
           <a href="/opportunities">Oportunidades</a>
           <a href="/favorites">Favoritos</a>
           <a href="/alerts" class="nav-alerts">Alertas<% if @nav_alert_count.to_i.positive? %><b><%= @nav_alert_count %></b><% end %></a>

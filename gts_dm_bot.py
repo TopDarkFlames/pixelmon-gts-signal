@@ -133,6 +133,13 @@ LISTING_DETAIL_COLUMNS = {
     "moves_json": "TEXT",
 }
 
+ALERT_DETAIL_COLUMNS = {
+    "match_mode": "TEXT NOT NULL DEFAULT 'text'",
+    "texture_query": "TEXT",
+    "min_iv_percent": "REAL",
+    "hidden_ability_only": "INTEGER NOT NULL DEFAULT 0",
+}
+
 
 def load_dotenv(path: Path) -> None:
     if not path.exists():
@@ -891,6 +898,8 @@ def ensure_storage(config: dict[str, Any]) -> None:
             CREATE TABLE IF NOT EXISTS alerts (
               id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, query TEXT NOT NULL,
               price_type TEXT NOT NULL DEFAULT 'all', min_amount REAL, max_amount REAL,
+              match_mode TEXT NOT NULL DEFAULT 'text', texture_query TEXT, min_iv_percent REAL,
+              hidden_ability_only INTEGER NOT NULL DEFAULT 0,
               channels TEXT NOT NULL DEFAULT 'site', active INTEGER NOT NULL DEFAULT 1,
               created_at INTEGER NOT NULL
             );
@@ -916,6 +925,18 @@ def ensure_storage(config: dict[str, Any]) -> None:
             CREATE TABLE IF NOT EXISTS service_status (
               name TEXT PRIMARY KEY, status TEXT NOT NULL, detail TEXT, updated_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS item_stats (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              item_key TEXT NOT NULL, texture_key TEXT NOT NULL, price_type TEXT NOT NULL,
+              sample_item TEXT NOT NULL, sample_texture TEXT, sample_currency TEXT,
+              last_seller TEXT, last_amount TEXT, last_price TEXT,
+              is_pokemon INTEGER NOT NULL DEFAULT 0, hidden_ability INTEGER NOT NULL DEFAULT 0, iv_percent REAL,
+              appearances INTEGER NOT NULL DEFAULT 0, first_seen_epoch INTEGER NOT NULL, last_seen_epoch INTEGER NOT NULL,
+              last_listing_id INTEGER NOT NULL, min_amount REAL, median_amount REAL, max_amount REAL,
+              amount_sum REAL NOT NULL DEFAULT 0, amount_count INTEGER NOT NULL DEFAULT 0,
+              created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+              UNIQUE(item_key, texture_key, price_type)
+            );
             """
         )
         user_columns = {row[1] for row in connection.execute("PRAGMA table_info(users)")}
@@ -930,6 +951,21 @@ def ensure_storage(config: dict[str, Any]) -> None:
         for name, definition in LISTING_DETAIL_COLUMNS.items():
             if name not in listing_columns:
                 connection.execute(f"ALTER TABLE listings ADD COLUMN {name} {definition}")
+        alert_columns = {row[1] for row in connection.execute("PRAGMA table_info(alerts)")}
+        for name, definition in ALERT_DETAIL_COLUMNS.items():
+            if name not in alert_columns:
+                connection.execute(f"ALTER TABLE alerts ADD COLUMN {name} {definition}")
+        connection.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_listings_texture_detected ON listings(texture, detected_at_epoch DESC);
+            CREATE INDEX IF NOT EXISTS idx_listings_sent_texture ON listings(status, item_key, price_type, texture, detected_at_epoch DESC);
+            CREATE INDEX IF NOT EXISTS idx_listings_sent_iv ON listings(status, is_pokemon, iv_percent DESC, detected_at_epoch DESC);
+            CREATE INDEX IF NOT EXISTS idx_alerts_texture ON alerts(active, texture_query, min_iv_percent, hidden_ability_only);
+            CREATE INDEX IF NOT EXISTS idx_item_stats_last_seen ON item_stats(last_seen_epoch DESC);
+            CREATE INDEX IF NOT EXISTS idx_item_stats_texture ON item_stats(texture_key, appearances, last_seen_epoch DESC);
+            CREATE INDEX IF NOT EXISTS idx_item_stats_item ON item_stats(item_key, price_type, last_seen_epoch DESC);
+            """
+        )
         connection.execute(
             "UPDATE listings SET hidden_ability=1 "
             "WHERE lower(COALESCE(ability, '')) LIKE '%(ha%'"
@@ -937,6 +973,7 @@ def ensure_storage(config: dict[str, Any]) -> None:
         duplicate_ids = connection.execute(
             "SELECT id FROM listings WHERE lower(raw_chat) LIKE '%[gtsbridge]%' AND status != 'invalid'"
         ).fetchall()
+        duplicated_bridge_rows = bool(duplicate_ids)
         if duplicate_ids:
             placeholders = ",".join("?" for _ in duplicate_ids)
             ids = [row[0] for row in duplicate_ids]
@@ -950,6 +987,109 @@ def ensure_storage(config: dict[str, Any]) -> None:
                 f"WHERE id IN ({placeholders})",
                 ids,
             )
+        if duplicated_bridge_rows or connection.execute("SELECT COUNT(*) FROM item_stats").fetchone()[0] == 0:
+            rebuild_item_stats(connection)
+
+
+def row_value(row: sqlite3.Row, key: str, default: Any = None) -> Any:
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
+def texture_key(value: str) -> str:
+    key = re.sub(r"[^a-z0-9]+", "", fold_text(str(value or "")))
+    return key or "original"
+
+
+def percentile(sorted_values: list[float], fraction: float) -> float | None:
+    if not sorted_values:
+        return None
+    position = (len(sorted_values) - 1) * fraction
+    lower = sorted_values[int(position)]
+    upper = sorted_values[min(int(position) + (0 if position.is_integer() else 1), len(sorted_values) - 1)]
+    return lower + ((upper - lower) * (position - int(position)))
+
+
+def upsert_item_stats(
+    connection: sqlite3.Connection,
+    item_key: str,
+    texture_key_value: str,
+    price_type: str,
+    rows: list[sqlite3.Row],
+) -> None:
+    if not rows:
+        return
+    latest = max(rows, key=lambda row: int(row["detected_at_epoch"] or 0))
+    first = min(rows, key=lambda row: int(row["detected_at_epoch"] or 0))
+    amounts = sorted(
+        float(row["amount_value"]) for row in rows
+        if row["amount_value"] is not None and float(row["amount_value"]) > 0
+    )
+    timestamp = int(time.time())
+    connection.execute(
+        """
+        INSERT INTO item_stats(
+          item_key, texture_key, price_type, sample_item, sample_texture, sample_currency,
+          last_seller, last_amount, last_price, is_pokemon, hidden_ability, iv_percent,
+          appearances, first_seen_epoch, last_seen_epoch, last_listing_id,
+          min_amount, median_amount, max_amount, amount_sum, amount_count, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(item_key, texture_key, price_type) DO UPDATE SET
+          sample_item=excluded.sample_item, sample_texture=excluded.sample_texture,
+          sample_currency=excluded.sample_currency, last_seller=excluded.last_seller,
+          last_amount=excluded.last_amount, last_price=excluded.last_price,
+          is_pokemon=excluded.is_pokemon, hidden_ability=excluded.hidden_ability,
+          iv_percent=excluded.iv_percent, appearances=excluded.appearances,
+          first_seen_epoch=excluded.first_seen_epoch, last_seen_epoch=excluded.last_seen_epoch,
+          last_listing_id=excluded.last_listing_id, min_amount=excluded.min_amount,
+          median_amount=excluded.median_amount, max_amount=excluded.max_amount,
+          amount_sum=excluded.amount_sum, amount_count=excluded.amount_count,
+          updated_at=excluded.updated_at
+        """,
+        (
+            item_key, texture_key_value, price_type, latest["item"], latest["texture"], latest["currency"],
+            latest["seller"], latest["amount"], latest["price"], int(latest["is_pokemon"] or 0),
+            int(latest["hidden_ability"] or 0), latest["iv_percent"], len(rows),
+            int(first["detected_at_epoch"] or 0), int(latest["detected_at_epoch"] or 0),
+            int(latest["id"]), min(amounts) if amounts else None, percentile(amounts, 0.5),
+            max(amounts) if amounts else None, sum(amounts), len(amounts), timestamp, timestamp,
+        ),
+    )
+
+
+def rebuild_item_stats(connection: sqlite3.Connection) -> None:
+    connection.execute("DELETE FROM item_stats")
+    grouped: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
+    for row in connection.execute("SELECT * FROM listings WHERE status='sent'"):
+        key = (
+            str(row["item_key"] or ""),
+            texture_key(str(row["texture"] or "")),
+            str(row["price_type"] or "unknown") or "unknown",
+        )
+        grouped.setdefault(key, []).append(row)
+    for (item_key, texture_key_value, price_type), rows in grouped.items():
+        upsert_item_stats(connection, item_key, texture_key_value, price_type, rows)
+
+
+def update_item_stats(connection: sqlite3.Connection, listing_id: int) -> None:
+    row = connection.execute("SELECT * FROM listings WHERE id=? AND status='sent'", (listing_id,)).fetchone()
+    if not row:
+        return
+    item_key = str(row["item_key"] or "")
+    raw_price_type = str(row["price_type"] or "")
+    price_type = raw_price_type or "unknown"
+    texture_key_value = texture_key(str(row["texture"] or ""))
+    rows = [
+        candidate
+        for candidate in connection.execute(
+            "SELECT * FROM listings WHERE status='sent' AND item_key=? AND COALESCE(price_type,'')=?",
+            (item_key, raw_price_type),
+        ).fetchall()
+        if texture_key(str(candidate["texture"] or "")) == texture_key_value
+    ]
+    upsert_item_stats(connection, item_key, texture_key_value, price_type, rows)
 
 
 def update_service_status(config: dict[str, Any], name: str, status: str, detail: str = "") -> None:
@@ -1154,17 +1294,60 @@ class DiscordGatewayPresence:
 
 
 def listing_matches_alert(listing: GtsListing, alert: sqlite3.Row) -> bool:
-    searchable = fold_text(f"{listing.item} {listing.seller}")
-    if fold_text(str(alert["query"])) not in searchable:
+    query = fold_text(str(row_value(alert, "query", ""))).strip()
+    mode = str(row_value(alert, "match_mode", "text") or "text")
+    if mode == "seller":
+        searchable = fold_text(listing.seller)
+    elif mode in {"item", "pokemon"}:
+        searchable = fold_text(listing.item)
+    elif mode == "texture":
+        searchable = fold_text(listing.texture)
+    else:
+        searchable = fold_text(
+            f"{listing.item} {listing.seller} {listing.texture} {listing.ability} "
+            f"{listing.nature} {listing.raw_chat}"
+        )
+    if query and query not in searchable:
         return False
-    if alert["price_type"] not in {"", "all", listing.price_type}:
+    if row_value(alert, "price_type") not in {"", "all", listing.price_type}:
         return False
     amount = amount_to_float(listing.amount)
-    if alert["min_amount"] is not None and (amount is None or amount < float(alert["min_amount"])):
+    if row_value(alert, "min_amount") is not None and (amount is None or amount < float(alert["min_amount"])):
         return False
-    if alert["max_amount"] is not None and (amount is None or amount > float(alert["max_amount"])):
+    if row_value(alert, "max_amount") is not None and (amount is None or amount > float(alert["max_amount"])):
+        return False
+
+    texture_query = fold_text(str(row_value(alert, "texture_query", "") or "")).strip()
+    listing_texture = fold_text(listing.texture).strip()
+    if texture_query:
+        if texture_query in {"custom", "txt", "textura", "textura custom", "customizada", "qualquer txt"}:
+            if not listing_texture or listing_texture == "original":
+                return False
+        elif texture_query == "original":
+            if listing_texture != "original":
+                return False
+        elif texture_query not in listing_texture:
+            return False
+
+    if int(row_value(alert, "hidden_ability_only", 0) or 0) == 1 and not listing.hidden_ability:
+        return False
+    min_iv = row_value(alert, "min_iv_percent")
+    if min_iv is not None and (listing.iv_percent is None or listing.iv_percent < float(min_iv)):
         return False
     return True
+
+
+def alert_label(alert: sqlite3.Row) -> str:
+    pieces = [str(row_value(alert, "query", "")).strip()]
+    texture_query = str(row_value(alert, "texture_query", "") or "").strip()
+    if texture_query:
+        pieces.append("TXT custom" if fold_text(texture_query) in {"custom", "txt", "textura", "customizada", "qualquer txt"} else f"TXT {texture_query}")
+    min_iv = row_value(alert, "min_iv_percent")
+    if min_iv is not None:
+        pieces.append(f"IV >= {float(min_iv):.0f}%")
+    if int(row_value(alert, "hidden_ability_only", 0) or 0) == 1:
+        pieces.append("HA")
+    return " · ".join(piece for piece in pieces if piece) or "Alerta"
 
 
 def enqueue_notification(
@@ -1213,7 +1396,7 @@ def enqueue_listing_notifications(
             "INSERT OR IGNORE INTO alert_matches(alert_id, listing_id, user_id, created_at) VALUES (?, ?, ?, ?)",
             (alert["id"], listing_id, alert["user_id"], int(time.time())),
         )
-        payload = {**base_payload, "alert": str(alert["query"])}
+        payload = {**base_payload, "alert": alert_label(alert)}
         channels = {value.strip() for value in str(alert["channels"]).split(",")}
         if "discord" in channels:
             enqueue_notification(connection, listing_id, int(alert["id"]), "discord", str(alert["discord_user_id"] or ""), payload)
@@ -1274,6 +1457,7 @@ def append_history(
             return int(row["id"]) if row else None
         listing_id = int(cursor.lastrowid)
         if status == "sent":
+            update_item_stats(connection, listing_id)
             message = format_message(str(config.get("message_template", "GTS: {pokemon} por {price}")), listing)
             enqueue_listing_notifications(connection, listing_id, listing, message)
         connection.execute(

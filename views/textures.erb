@@ -1,0 +1,79 @@
+<section class="dashboard-head compact-head textures-head">
+  <div>
+    <span class="eyebrow">TEXTURE RADAR / CUSTOM TXT</span>
+    <h1>Radar de Texturas</h1>
+    <p>Pokémon e itens com TXT detectada pelo GTS Bridge, agrupados para caça e comparação.</p>
+  </div>
+  <a class="button-link" href="/alerts">Abrir alertas</a>
+</section>
+
+<section class="stats-grid">
+  <article class="stat stat-token"><span>TXT registradas</span><strong><%= @texture_metrics[:total] %></strong><small>grupos únicos no histórico</small></article>
+  <article class="stat stat-money"><span>Pokémon com TXT</span><strong><%= @texture_metrics[:pokemon] %></strong><small>espécies detectadas</small></article>
+  <article class="stat stat-site"><span>Raras</span><strong><%= @texture_metrics[:rare] %></strong><small>até 2 aparições</small></article>
+  <article class="stat"><span>Última TXT</span><strong><%= @texture_metrics[:latest].positive? ? h(format_utc(@texture_metrics[:latest])) : "—" %></strong><small>último grupo visto</small></article>
+</section>
+
+<section class="market-panel texture-panel">
+  <div class="panel-heading">
+    <div><span class="section-code">TXT 01 / <%= @total_rows %> RESULTADOS</span><h2>Biblioteca capturada</h2></div>
+    <form class="feed-tools" method="get" action="/textures">
+      <label class="search-box"><span>BUSCAR</span><input name="q" type="search" placeholder="Ex.: Zacian Fade" value="<%= h(@query) %>"></label>
+      <label class="compact-field"><span>ORDENAR</span><select name="sort"><% [["recent","Recentes"],["rare","Mais raras"],["popular","Mais vistas"],["price_low","Menor preço"],["price_high","Maior preço"],["name","Nome"]].each do |value,label| %><option value="<%= value %>" <%= 'selected' if @sort == value %>><%= label %></option><% end %></select></label>
+      <fieldset class="segments">
+        <legend class="sr-only">Filtrar por moeda</legend>
+        <% [["all", "Todos"], ["money", "PokéCoins"], ["token", "Tokens"], ["site", "Site"]].each do |value, label| %>
+          <input id="texture-filter-<%= value %>" type="radio" name="type" value="<%= value %>" <%= "checked" if @filter == value %>>
+          <label for="texture-filter-<%= value %>"><%= label %></label>
+        <% end %>
+      </fieldset>
+      <button type="submit">Filtrar</button>
+    </form>
+  </div>
+
+  <% if @texture_rows.empty? %>
+    <p class="empty-state">Nenhuma TXT encontrada neste filtro.</p>
+  <% else %>
+    <div class="texture-grid">
+      <% @texture_rows.each do |row| %>
+        <% kind = price_type(row) %>
+        <% image_url = listing_image_url(row) %>
+        <article class="texture-card currency-border-<%= kind %>">
+          <a class="texture-card-visual" href="/listing/<%= row['id'] %>" aria-label="Ver <%= h(row['item']) %>">
+            <% if image_url %><img src="<%= image_url %>" alt="" loading="lazy"><% else %><span>TXT</span><% end %>
+          </a>
+          <div class="texture-card-main">
+            <span class="section-code"><%= h(kind.upcase) %> / <%= row["appearances"] %>x</span>
+            <h3><a href="/listing/<%= row['id'] %>"><%= h(row["item"]) %></a></h3>
+            <div class="pokemon-meta">
+              <span class="texture-tag custom">TXT <%= h(row["texture"]) %></span>
+              <% if hidden_ability?(row) %><span class="ha-tag">HA</span><% end %>
+              <% if row["iv_percent"] %><span>IV <%= format('%.2f', row["iv_percent"]) %>%</span><% end %>
+            </div>
+            <dl>
+              <div><dt>Mediana</dt><dd><%= h(format_number(row["history_median"])) %></dd></div>
+              <div><dt>Menor</dt><dd><%= h(format_number(row["history_min"])) %></dd></div>
+              <div><dt>Última vez</dt><dd><%= row["last_seen_epoch"].to_i.positive? ? h(format_utc(row["last_seen_epoch"])) : "—" %></dd></div>
+            </dl>
+            <form method="post" action="/alerts" class="texture-alert-form">
+              <input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>">
+              <input type="hidden" name="query" value="<%= h(row['item']) %>">
+              <input type="hidden" name="price_type" value="all">
+              <input type="hidden" name="match_mode" value="item">
+              <input type="hidden" name="texture_query" value="<%= h(row['texture']) %>">
+              <button type="submit" class="secondary">Alertar essa TXT</button>
+            </form>
+          </div>
+        </article>
+      <% end %>
+    </div>
+    <% pages = (@total_rows.to_f / PixelmonGTSPanel::TEXTURE_PAGE_SIZE).ceil %>
+    <% if pages > 1 %>
+      <nav class="pagination" aria-label="Paginação de texturas">
+        <% if @page > 1 %><a href="?<%= Rack::Utils.build_query(params.to_h.merge('page' => @page - 1)) %>">Anterior</a><% end %>
+        <span>Página <strong><%= @page %></strong> de <%= pages %></span>
+        <% if @page < pages %><a href="?<%= Rack::Utils.build_query(params.to_h.merge('page' => @page + 1)) %>">Próxima</a><% end %>
+      </nav>
+    <% end %>
+  <% end %>
+</section>

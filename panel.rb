@@ -33,6 +33,8 @@ class PixelmonGTSPanel < Sinatra::Base
   RESET_TTL = 60 * 60
   FEED_PAGE_SIZE = 40
   HISTORY_PAGE_SIZE = 60
+  TEXTURE_PAGE_SIZE = 72
+  PRIORITY_TEXTURE_TARGETS = %w[Zacian Kyogre Rayquaza Zamazenta Eternatus].freeze
 
   configure do
     if File.exist?(ENV_PATH)
@@ -268,6 +270,11 @@ class PixelmonGTSPanel < Sinatra::Base
       %w[last_seen total name price_low price_high].include?(value) ? value : "last_seen"
     end
 
+    def texture_sort
+      value = params.fetch("sort", "recent").to_s
+      %w[recent rare popular price_low price_high name].include?(value) ? value : "recent"
+    end
+
     def listing_rows(database, limit: FEED_PAGE_SIZE)
       clauses = ["status = 'sent'"]
       values = []
@@ -316,8 +323,33 @@ class PixelmonGTSPanel < Sinatra::Base
       [enrich_opportunities(database, rows), total]
     end
 
+    def confidence_from_count(count)
+      count = count.to_i
+      count >= 20 ? "alta" : (count >= 8 ? "média" : (count >= 3 ? "baixa" : "insuficiente"))
+    end
+
+    def history_row_from_stats(row)
+      last_seen = row["last_seen_epoch"].to_i
+      row.merge(
+        "id" => row["last_listing_id"],
+        "item" => row["sample_item"],
+        "seller" => row["last_seller"],
+        "amount" => row["last_amount"],
+        "currency" => row["sample_currency"],
+        "price" => row["last_price"],
+        "texture" => row["sample_texture"],
+        "detected_at_epoch" => last_seen,
+        "detected_at" => last_seen.positive? ? Time.at(last_seen).utc.iso8601 : "",
+        "history_min" => row["min_amount"],
+        "history_median" => row["median_amount"],
+        "history_max" => row["max_amount"],
+        "history_samples" => row["amount_count"],
+        "history_confidence" => confidence_from_count(row["amount_count"])
+      )
+    end
+
     def history_rows(database)
-      clauses = ["status = 'sent'"]
+      clauses = ["1=1"]
       values = []
       unless feed_filter == "all"
         clauses << "price_type = ?"
@@ -327,60 +359,35 @@ class PixelmonGTSPanel < Sinatra::Base
       when "pokemon"
         clauses << "is_pokemon = 1"
       when "custom"
-        clauses << "trim(COALESCE(texture, '')) <> '' AND lower(texture) <> 'original'"
+        clauses << "texture_key <> 'original'"
       when "original"
-        clauses << "is_pokemon = 1 AND lower(texture) = 'original'"
+        clauses << "is_pokemon = 1 AND texture_key = 'original'"
       end
       unless feed_query.empty?
-        clauses << "(item_key LIKE ? OR lower(seller) LIKE ? OR lower(COALESCE(texture, '')) LIKE ? OR lower(COALESCE(nature, '')) LIKE ? OR lower(COALESCE(ability, '')) LIKE ?)"
+        clauses << "(item_key LIKE ? OR lower(sample_item) LIKE ? OR lower(last_seller) LIKE ? OR lower(COALESCE(sample_texture, '')) LIKE ?)"
         search = "%#{GTSStore.fold(feed_query)}%"
-        values.concat([search, search, search, search, search])
+        values.concat([search, search, search, search])
       end
       seconds = { "30d" => 2_592_000, "90d" => 7_776_000, "180d" => 15_552_000 }[history_period]
       if seconds
-        clauses << "detected_at_epoch >= ?"
+        clauses << "last_seen_epoch >= ?"
         values << now - seconds
       end
 
-      records = database.execute(
-        "SELECT id, item, item_key, seller, amount_value, amount, currency, price, price_type, detected_at, detected_at_epoch, is_pokemon, texture, hidden_ability, iv_percent FROM listings WHERE #{clauses.join(' AND ')}",
-        values
+      order = {
+        "total" => "appearances DESC, last_seen_epoch DESC",
+        "name" => "sample_item COLLATE NOCASE ASC, last_seen_epoch DESC",
+        "price_low" => "min_amount IS NULL, min_amount ASC, last_seen_epoch DESC",
+        "price_high" => "max_amount IS NULL, max_amount DESC, last_seen_epoch DESC",
+        "last_seen" => "last_seen_epoch DESC, sample_item COLLATE NOCASE ASC"
+      }.fetch(history_sort)
+      where = clauses.join(" AND ")
+      total = database.get_first_value("SELECT COUNT(*) FROM item_stats WHERE #{where}", values).to_i
+      rows = database.execute(
+        "SELECT * FROM item_stats WHERE #{where} ORDER BY #{order} LIMIT ? OFFSET ?",
+        values + [HISTORY_PAGE_SIZE, (feed_page - 1) * HISTORY_PAGE_SIZE]
       )
-      groups = records.group_by { |row| [row["item_key"], row["texture"].to_s.downcase, row["price_type"]] }.map do |_key, rows|
-        latest = rows.max_by { |row| row["detected_at_epoch"].to_i }
-        first = rows.min_by { |row| row["detected_at_epoch"].to_i }
-        stats = robust_price_stats(rows.map { |row| row["amount_value"] })
-        latest.merge(
-          "appearances" => rows.length,
-          "first_seen_epoch" => first["detected_at_epoch"].to_i,
-          "last_seen_epoch" => latest["detected_at_epoch"].to_i,
-          "first_seen_at" => first["detected_at"],
-          "last_seen_at" => latest["detected_at"],
-          "history_min" => stats[:min],
-          "history_median" => stats[:median],
-          "history_max" => stats[:max],
-          "history_samples" => stats[:count],
-          "history_confidence" => stats[:confidence]
-        )
-      end
-
-      sorted = groups.sort_by do |row|
-        case history_sort
-        when "total"
-          [-row["appearances"].to_i, -row["last_seen_epoch"].to_i]
-        when "name"
-          [GTSStore.fold(row["item"]), -row["last_seen_epoch"].to_i]
-        when "price_low"
-          [row["history_min"] || Float::INFINITY, -row["last_seen_epoch"].to_i]
-        when "price_high"
-          [-(row["history_max"] || 0), -row["last_seen_epoch"].to_i]
-        else
-          [-row["last_seen_epoch"].to_i, GTSStore.fold(row["item"])]
-        end
-      end
-      total = sorted.length
-      offset = (feed_page - 1) * HISTORY_PAGE_SIZE
-      [sorted.slice(offset, HISTORY_PAGE_SIZE) || [], total]
+      [rows.map { |row| history_row_from_stats(row) }, total]
     end
 
     def history_metrics(database)
@@ -390,6 +397,44 @@ class PixelmonGTSPanel < Sinatra::Base
         custom_textures: database.get_first_value("SELECT COUNT(*) FROM listings WHERE status='sent' AND trim(COALESCE(texture, '')) <> '' AND lower(texture) <> 'original'").to_i,
         first_seen: database.get_first_value("SELECT MIN(detected_at_epoch) FROM listings WHERE status='sent'").to_i,
         database_size: File.file?(database_path) ? File.size(database_path) : 0
+      }
+    end
+
+    def texture_rows(database)
+      clauses = ["texture_key <> 'original'"]
+      values = []
+      unless feed_filter == "all"
+        clauses << "price_type = ?"
+        values << feed_filter
+      end
+      unless feed_query.empty?
+        clauses << "(item_key LIKE ? OR lower(sample_item) LIKE ? OR lower(COALESCE(sample_texture, '')) LIKE ? OR lower(last_seller) LIKE ?)"
+        search = "%#{GTSStore.fold(feed_query)}%"
+        values.concat([search, search, search, search])
+      end
+      order = {
+        "recent" => "last_seen_epoch DESC, sample_item COLLATE NOCASE ASC",
+        "rare" => "appearances ASC, last_seen_epoch DESC",
+        "popular" => "appearances DESC, last_seen_epoch DESC",
+        "price_low" => "min_amount IS NULL, min_amount ASC, last_seen_epoch DESC",
+        "price_high" => "max_amount IS NULL, max_amount DESC, last_seen_epoch DESC",
+        "name" => "sample_item COLLATE NOCASE ASC, sample_texture COLLATE NOCASE ASC"
+      }.fetch(texture_sort)
+      where = clauses.join(" AND ")
+      total = database.get_first_value("SELECT COUNT(*) FROM item_stats WHERE #{where}", values).to_i
+      rows = database.execute(
+        "SELECT * FROM item_stats WHERE #{where} ORDER BY #{order} LIMIT ? OFFSET ?",
+        values + [TEXTURE_PAGE_SIZE, (feed_page - 1) * TEXTURE_PAGE_SIZE]
+      )
+      [rows.map { |row| history_row_from_stats(row) }, total]
+    end
+
+    def texture_metrics(database)
+      {
+        total: database.get_first_value("SELECT COUNT(*) FROM item_stats WHERE texture_key <> 'original'").to_i,
+        pokemon: database.get_first_value("SELECT COUNT(DISTINCT item_key) FROM item_stats WHERE texture_key <> 'original' AND is_pokemon=1").to_i,
+        rare: database.get_first_value("SELECT COUNT(*) FROM item_stats WHERE texture_key <> 'original' AND appearances <= 2").to_i,
+        latest: database.get_first_value("SELECT MAX(last_seen_epoch) FROM item_stats WHERE texture_key <> 'original'").to_i
       }
     end
 
@@ -561,6 +606,88 @@ class PixelmonGTSPanel < Sinatra::Base
 
     def custom_texture?(row)
       !row["texture"].to_s.empty? && row["texture"].to_s.casecmp("original") != 0
+    end
+
+    def parse_optional_float(value)
+      text = value.to_s.strip
+      text.empty? ? nil : Float(text)
+    end
+
+    def alert_searchable_text(alert, listing)
+      case alert["match_mode"].to_s
+      when "seller"
+        listing["seller"].to_s
+      when "item", "pokemon"
+        listing["item"].to_s
+      when "texture"
+        listing["texture"].to_s
+      else
+        "#{listing['item']} #{listing['seller']} #{listing['texture']} #{listing['ability']} #{listing['nature']} #{listing['raw_chat']}"
+      end
+    end
+
+    def alert_matches_listing?(alert, listing)
+      query = GTSStore.fold(alert["query"]).strip
+      return false if !query.empty? && !GTSStore.fold(alert_searchable_text(alert, listing)).include?(query)
+      return false unless alert["price_type"].to_s.empty? || alert["price_type"] == "all" || alert["price_type"] == listing["price_type"]
+
+      amount = listing["amount_value"]&.to_f
+      return false if alert["min_amount"] && (!amount || amount < alert["min_amount"].to_f)
+      return false if alert["max_amount"] && (!amount || amount > alert["max_amount"].to_f)
+
+      texture_query = GTSStore.fold(alert["texture_query"]).strip
+      listing_texture = GTSStore.fold(listing["texture"]).strip
+      unless texture_query.empty?
+        if %w[custom txt textura customizada].include?(texture_query) || texture_query == "textura custom" || texture_query == "qualquer txt"
+          return false if listing_texture.empty? || listing_texture == "original"
+        elsif texture_query == "original"
+          return false unless listing_texture == "original"
+        else
+          return false unless listing_texture.include?(texture_query)
+        end
+      end
+
+      return false if alert["hidden_ability_only"].to_i == 1 && !hidden_ability?(listing)
+      minimum_iv = alert["min_iv_percent"]
+      return false if minimum_iv && (!listing["iv_percent"] || listing["iv_percent"].to_f < minimum_iv.to_f)
+
+      true
+    end
+
+    def alert_description(alert)
+      parts = []
+      parts << (alert["price_type"] == "all" ? "todas as moedas" : alert["price_type"].to_s)
+      texture_query = alert["texture_query"].to_s.strip
+      parts << (GTSStore.fold(texture_query).match?(/\A(custom|txt|textura|customizada|qualquer txt)\z/) ? "qualquer TXT customizada" : "TXT #{texture_query}") unless texture_query.empty?
+      parts << "IV >= #{format('%.0f', alert['min_iv_percent'].to_f)}%" if alert["min_iv_percent"]
+      parts << "HA" if alert["hidden_ability_only"].to_i == 1
+      parts << alert["channels"].to_s
+      parts.reject(&:empty?).join(" · ")
+    end
+
+    def selected_alert_channels
+      channels = ["site"]
+      channels << "discord" if params["discord"] == "1"
+      channels << "telegram" if params["telegram"] == "1"
+      channels.join(",")
+    end
+
+    def create_priority_texture_alerts(database, user_id, channels)
+      created = 0
+      PRIORITY_TEXTURE_TARGETS.each do |target|
+        existing = database.get_first_value(<<~SQL, [user_id, GTSStore.fold(target)])
+          SELECT id FROM alerts
+          WHERE user_id = ? AND lower(query) = ? AND COALESCE(texture_query, '') IN ('custom', 'txt')
+        SQL
+        next if existing
+
+        database.execute(<<~SQL, [user_id, target, channels, now])
+          INSERT INTO alerts(user_id, query, price_type, match_mode, texture_query, channels, active, created_at)
+          VALUES (?, ?, 'all', 'item', 'custom', ?, 1, ?)
+        SQL
+        created += 1
+      end
+      created
     end
 
     def listing_moves(row)
@@ -856,6 +983,19 @@ class PixelmonGTSPanel < Sinatra::Base
     page("Histórico", :history)
   end
 
+  get "/textures" do
+    approved!
+    with_db do |database|
+      @texture_rows, @total_rows = texture_rows(database)
+      @texture_metrics = texture_metrics(database)
+    end
+    @filter = feed_filter
+    @query = feed_query
+    @page = feed_page
+    @sort = texture_sort
+    page("Texturas", :textures)
+  end
+
   get "/notifications/check" do
     approved!
     content_type :json
@@ -875,13 +1015,9 @@ class PixelmonGTSPanel < Sinatra::Base
         reasons << "Item favorito" if favorite_items.include?(listing["item_key"])
         reasons << "Vendedor favorito" if favorite_sellers.include?(GTSStore.fold(listing["seller"]))
         alerts.each do |alert|
-          searchable = GTSStore.fold("#{listing['item']} #{listing['seller']}")
-          next unless searchable.include?(GTSStore.fold(alert["query"]))
-          next unless alert["price_type"].to_s.empty? || alert["price_type"] == "all" || alert["price_type"] == listing["price_type"]
-          amount = listing["amount_value"]&.to_f
-          next if alert["min_amount"] && (!amount || amount < alert["min_amount"].to_f)
-          next if alert["max_amount"] && (!amount || amount > alert["max_amount"].to_f)
-          reasons << "Alerta: #{alert['query']}"
+          next unless alert_matches_listing?(alert, listing)
+
+          reasons << "Alerta: #{alert_description(alert)}"
         end
         next if reasons.empty?
         {
@@ -899,6 +1035,14 @@ class PixelmonGTSPanel < Sinatra::Base
     with_db do |database|
       @listing = database.get_first_row("SELECT * FROM listings WHERE id = ? AND status='sent'", [params["id"].to_i])
       halt 404, page("Não encontrado", :status, code: "404", title: "Anúncio não encontrado", message: "Este registro não existe mais.") unless @listing
+      @listing_stats = database.get_first_row(
+        "SELECT * FROM item_stats WHERE item_key=? AND texture_key=? AND price_type=?",
+        [
+          @listing["item_key"],
+          GTSStore.texture_key(@listing["texture"]),
+          @listing["price_type"].to_s.empty? ? "unknown" : @listing["price_type"]
+        ]
+      )
       @price_history = database.execute(<<~SQL, [@listing["item_key"], @listing["price_type"]])
         SELECT * FROM listings WHERE item_key = ? AND price_type = ? AND status='sent' AND amount_value IS NOT NULL
         ORDER BY detected_at_epoch DESC LIMIT 60
@@ -1024,8 +1168,14 @@ class PixelmonGTSPanel < Sinatra::Base
     approved!
     with_db do |database|
       @alerts = database.execute("SELECT * FROM alerts WHERE user_id = ? ORDER BY created_at DESC", [@current_user["id"]])
+      existing_priority = @alerts
+                          .select { |alert| %w[custom txt].include?(alert["texture_query"].to_s) }
+                          .map { |alert| GTSStore.fold(alert["query"]) }
+                          .to_set
+      @priority_missing = PRIORITY_TEXTURE_TARGETS.reject { |target| existing_priority.include?(GTSStore.fold(target)) }
       @matches = database.execute(<<~SQL, [@current_user["id"]])
-        SELECT alert_matches.*, alerts.query, listings.item, listings.seller, listings.price, listings.price_type
+        SELECT alert_matches.*, alerts.query, alerts.texture_query, alerts.min_iv_percent, alerts.hidden_ability_only,
+               listings.item, listings.seller, listings.price, listings.price_type, listings.texture, listings.iv_percent
         FROM alert_matches
         JOIN alerts ON alerts.id = alert_matches.alert_id
         JOIN listings ON listings.id = alert_matches.listing_id
@@ -1042,21 +1192,37 @@ class PixelmonGTSPanel < Sinatra::Base
     query = params.fetch("query", "").strip[0, 80]
     halt 422, page("Alertas", :status, code: "422", title: "Alerta inválido", message: "Informe um item, Pokémon ou vendedor.") if query.length < 2
     price_type = %w[all money token site].include?(params["price_type"]) ? params["price_type"] : "all"
-    channels = ["site"]
-    channels << "discord" if params["discord"] == "1"
-    channels << "telegram" if params["telegram"] == "1"
+    match_mode = %w[text item seller texture].include?(params["match_mode"]) ? params["match_mode"] : "text"
+    texture_query = params.fetch("texture_query", "").strip[0, 80]
+    hidden_ability_only = params["hidden_ability_only"] == "1" ? 1 : 0
     minimum = params["min_amount"].to_s.strip
     maximum = params["max_amount"].to_s.strip
+    minimum_iv = parse_optional_float(params["min_iv_percent"])
+    halt 422, page("Alertas", :status, code: "422", title: "IV inválido", message: "Use IV mínimo entre 0 e 100.") if minimum_iv && !minimum_iv.between?(0, 100)
     with_db do |database|
       database.execute(
-        "INSERT INTO alerts(user_id, query, price_type, min_amount, max_amount, channels, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [@current_user["id"], query, price_type, minimum.empty? ? nil : Float(minimum), maximum.empty? ? nil : Float(maximum), channels.join(","), now]
+        "INSERT INTO alerts(user_id, query, price_type, min_amount, max_amount, match_mode, texture_query, min_iv_percent, hidden_ability_only, channels, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          @current_user["id"], query, price_type, minimum.empty? ? nil : Float(minimum),
+          maximum.empty? ? nil : Float(maximum), match_mode, texture_query.empty? ? nil : texture_query,
+          minimum_iv, hidden_ability_only, selected_alert_channels, now
+        ]
       )
-      log_event(database, "alert_created", @current_user["id"], query)
+      log_event(database, "alert_created", @current_user["id"], "#{query} #{texture_query}".strip)
     end
     redirect "/alerts"
   rescue ArgumentError
-    halt 422, page("Alertas", :status, code: "422", title: "Preço inválido", message: "Use apenas números nos limites de preço.")
+    halt 422, page("Alertas", :status, code: "422", title: "Número inválido", message: "Use apenas números nos limites de preço e IV.")
+  end
+
+  post "/alerts/priority-textures" do
+    approved!
+    csrf!
+    with_db do |database|
+      created = create_priority_texture_alerts(database, @current_user["id"], selected_alert_channels)
+      log_event(database, "priority_texture_alerts", @current_user["id"], "#{created} criados")
+    end
+    redirect "/alerts?notice=priority_textures"
   end
 
   post "/alerts/:id" do
@@ -1158,6 +1324,8 @@ class PixelmonGTSPanel < Sinatra::Base
       @queue_summary = database.execute("SELECT status, COUNT(*) AS total FROM notification_queue GROUP BY status").to_h { |row| [row["status"], row["total"].to_i] }
       @health = system_health(database)
       @invalid_count = database.get_first_value("SELECT COUNT(*) FROM listings WHERE status='invalid'").to_i
+      @item_stats_count = database.get_first_value("SELECT COUNT(*) FROM item_stats").to_i
+      @database_size = File.file?(database_path) ? File.size(database_path) : 0
       @delivery_latency = database.get_first_value(<<~SQL).to_f
         SELECT AVG(sent_at - created_at) FROM (
           SELECT sent_at, created_at FROM notification_queue
@@ -1167,6 +1335,23 @@ class PixelmonGTSPanel < Sinatra::Base
       @smtp_configured = %w[SMTP_HOST SMTP_USER SMTP_PASSWORD SMTP_FROM].all? { |name| !config_env(name).empty? }
     end
     page("Admin", :admin)
+  end
+
+  post "/admin/maintenance" do
+    admin!
+    csrf!
+    action = params["action"].to_s
+    halt 400, "Ação inválida." unless %w[rebuild_stats optimize].include?(action)
+    with_db do |database|
+      case action
+      when "rebuild_stats"
+        GTSStore.rebuild_item_stats(database)
+      when "optimize"
+        database.execute("PRAGMA optimize")
+      end
+      log_event(database, "maintenance_#{action}", @current_user["id"])
+    end
+    redirect "/admin?notice=#{action}"
   end
 
   post "/admin/user" do
@@ -1229,6 +1414,7 @@ class PixelmonGTSPanel < Sinatra::Base
     halt 400, "Ação inválida." unless params["action"] == "restore"
     with_db do |database|
       database.execute("UPDATE listings SET status='sent', reason='admin_restored' WHERE id=? AND status='invalid'", [params["id"].to_i])
+      GTSStore.update_item_stats(database, params["id"].to_i)
       log_event(database, "invalid_restored", @current_user["id"], params["id"])
     end
     redirect safe_return_to(params["return_to"], "/admin/invalid")

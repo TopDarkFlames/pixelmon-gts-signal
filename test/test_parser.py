@@ -85,6 +85,12 @@ class ParserTest(unittest.TestCase):
                 with sqlite3.connect(database) as connection:
                     connection.execute("INSERT INTO users(email,name,password_hash,role,status,created_at) VALUES ('user@example.com','User','hash','user','approved',1)")
                     connection.execute("INSERT INTO alerts(user_id,query,price_type,channels,created_at) VALUES (1,'Marshadow','money','site',1)")
+                    connection.execute(
+                        """
+                        INSERT INTO alerts(user_id,query,price_type,match_mode,texture_query,min_iv_percent,hidden_ability_only,channels,created_at)
+                        VALUES (1,'Marshadow','all','item','custom',70,1,'site',1)
+                        """
+                    )
                 listing = bot.GtsListing(
                     item="Marshadow", seller="ARKIO", amount="4,000,000.00", currency="PokéCoins",
                     price_type="money", price="$ 4,000,000.00 PokéCoins", raw_chat="GTS test",
@@ -98,8 +104,13 @@ class ParserTest(unittest.TestCase):
                 self.assertEqual(first_id, second_id)
                 with sqlite3.connect(database) as connection:
                     self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM listings").fetchone()[0])
-                    self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM alert_matches").fetchone()[0])
+                    self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM alert_matches").fetchone()[0])
                     self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM notification_queue").fetchone()[0])
+                    self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM item_stats").fetchone()[0])
+                    self.assertEqual(
+                        ("marshadow", "hero", "money", 1),
+                        connection.execute("SELECT item_key, texture_key, price_type, appearances FROM item_stats").fetchone(),
+                    )
                     details = connection.execute(
                         "SELECT source, texture, iv_total, hidden_ability, moves_json FROM listings"
                     ).fetchone()

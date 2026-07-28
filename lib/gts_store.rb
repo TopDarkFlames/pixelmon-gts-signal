@@ -27,6 +27,13 @@ module GTSStore
     "ev_speed" => "INTEGER", "moves_json" => "TEXT"
   }.freeze
 
+  ALERT_COLUMNS = {
+    "match_mode" => "TEXT NOT NULL DEFAULT 'text'",
+    "texture_query" => "TEXT",
+    "min_iv_percent" => "REAL",
+    "hidden_ability_only" => "INTEGER NOT NULL DEFAULT 0"
+  }.freeze
+
   def connect(path)
     database = SQLite3::Database.new(path)
     database.results_as_hash = true
@@ -41,9 +48,12 @@ module GTSStore
     database.execute_batch(schema_sql)
     ensure_columns(database, "users", USER_COLUMNS)
     ensure_columns(database, "listings", LISTING_COLUMNS)
+    ensure_columns(database, "alerts", ALERT_COLUMNS)
+    ensure_indexes(database)
     database.execute("UPDATE listings SET hidden_ability=1 WHERE lower(COALESCE(ability, '')) LIKE '%(ha%'")
     import_csv(database, csv_path) if csv_path
-    quarantine_non_global_listings(database)
+    quarantined = quarantine_non_global_listings(database)
+    rebuild_item_stats(database) if quarantined.positive? || database.get_first_value("SELECT COUNT(*) FROM item_stats").to_i.zero?
   ensure
     database&.close
   end
@@ -53,6 +63,18 @@ module GTSStore
     columns.each do |name, definition|
       database.execute("ALTER TABLE #{table} ADD COLUMN #{name} #{definition}") unless existing.include?(name)
     end
+  end
+
+  def ensure_indexes(database)
+    database.execute_batch(<<~SQL)
+      CREATE INDEX IF NOT EXISTS idx_listings_texture_detected ON listings(texture, detected_at_epoch DESC);
+      CREATE INDEX IF NOT EXISTS idx_listings_sent_texture ON listings(status, item_key, price_type, texture, detected_at_epoch DESC);
+      CREATE INDEX IF NOT EXISTS idx_listings_sent_iv ON listings(status, is_pokemon, iv_percent DESC, detected_at_epoch DESC);
+      CREATE INDEX IF NOT EXISTS idx_alerts_texture ON alerts(active, texture_query, min_iv_percent, hidden_ability_only);
+      CREATE INDEX IF NOT EXISTS idx_item_stats_last_seen ON item_stats(last_seen_epoch DESC);
+      CREATE INDEX IF NOT EXISTS idx_item_stats_texture ON item_stats(texture_key, appearances, last_seen_epoch DESC);
+      CREATE INDEX IF NOT EXISTS idx_item_stats_item ON item_stats(item_key, price_type, last_seen_epoch DESC);
+    SQL
   end
 
   def import_csv(database, path)
@@ -69,9 +91,10 @@ module GTSStore
   end
 
   def quarantine_non_global_listings(database)
+    quarantined = 0
     duplicate_ids = database.execute(<<~SQL).map { |row| row["id"] }
       SELECT id FROM listings
-      WHERE lower(raw_chat) LIKE '%[gtsbridge]%'
+      WHERE status != 'invalid' AND lower(raw_chat) LIKE '%[gtsbridge]%'
     SQL
     unless duplicate_ids.empty?
       placeholders = (["?"] * duplicate_ids.length).join(", ")
@@ -83,11 +106,17 @@ module GTSStore
         "UPDATE listings SET status='invalid', reason='duplicate_bridge_logger' WHERE id IN (#{placeholders})",
         duplicate_ids
       )
+      quarantined += duplicate_ids.length
     end
+    non_global_ids = database.execute(<<~SQL).map { |row| row["id"] }
+      SELECT id FROM listings
+      WHERE status = 'sent' AND lower(raw_chat) NOT LIKE '%to the global gts for%'
+    SQL
     database.execute(<<~SQL)
       UPDATE listings SET status = 'invalid', reason = 'not_global_gts'
       WHERE status = 'sent' AND lower(raw_chat) NOT LIKE '%to the global gts for%'
     SQL
+    quarantined + non_global_ids.length
   end
 
   def insert_listing(database, row)
@@ -124,7 +153,82 @@ module GTSStore
       "INSERT OR IGNORE INTO listings (#{columns.join(', ')}) VALUES (#{(['?'] * columns.length).join(', ')})",
       values.values
     )
-    database.last_insert_row_id
+    listing_id = database.last_insert_row_id
+    update_item_stats(database, listing_id) if listing_id.to_i.positive? && values["status"] == "sent"
+    listing_id
+  end
+
+  def texture_key(value)
+    folded = fold(value).gsub(/[^a-z0-9]+/, "")
+    folded.empty? ? "original" : folded
+  end
+
+  def update_item_stats(database, listing_id)
+    row = database.get_first_row("SELECT * FROM listings WHERE id=? AND status='sent'", [listing_id])
+    return unless row
+
+    raw_price_type = row["price_type"].to_s
+    key = [row["item_key"], texture_key(row["texture"]), raw_price_type.empty? ? "unknown" : raw_price_type]
+    rows = database.execute(
+      "SELECT * FROM listings WHERE status='sent' AND item_key=? AND COALESCE(price_type,'')=?",
+      [key[0], raw_price_type]
+    ).select { |candidate| texture_key(candidate["texture"]) == key[1] }
+    upsert_item_stats(database, key[0], key[1], key[2], rows)
+  end
+
+  def rebuild_item_stats(database)
+    database.execute("DELETE FROM item_stats")
+    groups = database.execute(<<~SQL).group_by { |row| [row["item_key"], texture_key(row["texture"]), row["price_type"].to_s.empty? ? "unknown" : row["price_type"]] }
+      SELECT * FROM listings WHERE status='sent'
+    SQL
+    groups.each do |(item_key, texture_key_value, price_type), rows|
+      upsert_item_stats(database, item_key, texture_key_value, price_type, rows)
+    end
+  end
+
+  def upsert_item_stats(database, item_key, texture_key_value, price_type, rows)
+    rows = rows.compact
+    return if rows.empty?
+
+    latest = rows.max_by { |row| row["detected_at_epoch"].to_i }
+    first = rows.min_by { |row| row["detected_at_epoch"].to_i }
+    amounts = rows.filter_map { |row| row["amount_value"]&.to_f }.select(&:positive?).sort
+    median = percentile(amounts, 0.5)
+    timestamp = Time.now.to_i
+    sql = <<~SQL
+      INSERT INTO item_stats(
+        item_key, texture_key, price_type, sample_item, sample_texture, sample_currency,
+        last_seller, last_amount, last_price, is_pokemon, hidden_ability, iv_percent,
+        appearances, first_seen_epoch, last_seen_epoch, last_listing_id,
+        min_amount, median_amount, max_amount, amount_sum, amount_count, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(item_key, texture_key, price_type) DO UPDATE SET
+        sample_item=excluded.sample_item, sample_texture=excluded.sample_texture,
+        sample_currency=excluded.sample_currency, last_seller=excluded.last_seller,
+        last_amount=excluded.last_amount, last_price=excluded.last_price,
+        is_pokemon=excluded.is_pokemon, hidden_ability=excluded.hidden_ability,
+        iv_percent=excluded.iv_percent, appearances=excluded.appearances,
+        first_seen_epoch=excluded.first_seen_epoch, last_seen_epoch=excluded.last_seen_epoch,
+        last_listing_id=excluded.last_listing_id, min_amount=excluded.min_amount,
+        median_amount=excluded.median_amount, max_amount=excluded.max_amount,
+        amount_sum=excluded.amount_sum, amount_count=excluded.amount_count,
+        updated_at=excluded.updated_at
+    SQL
+    database.execute(sql, [
+      item_key, texture_key_value, price_type, latest["item"], latest["texture"], latest["currency"],
+      latest["seller"], latest["amount"], latest["price"], latest["is_pokemon"].to_i, latest["hidden_ability"].to_i,
+      latest["iv_percent"], rows.length, first["detected_at_epoch"].to_i, latest["detected_at_epoch"].to_i,
+      latest["id"].to_i, amounts.min, median, amounts.max, amounts.sum, amounts.length, timestamp, timestamp
+    ])
+  end
+
+  def percentile(sorted_values, fraction)
+    return nil if sorted_values.empty?
+
+    position = (sorted_values.length - 1) * fraction
+    lower = sorted_values[position.floor]
+    upper = sorted_values[position.ceil]
+    lower + ((upper - lower) * (position - position.floor))
   end
 
   def parse_amount(value)
@@ -194,10 +298,24 @@ module GTSStore
       CREATE TABLE IF NOT EXISTS alerts (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, query TEXT NOT NULL,
         price_type TEXT NOT NULL DEFAULT 'all', min_amount REAL, max_amount REAL,
+        match_mode TEXT NOT NULL DEFAULT 'text', texture_query TEXT, min_iv_percent REAL,
+        hidden_ability_only INTEGER NOT NULL DEFAULT 0,
         channels TEXT NOT NULL DEFAULT 'site', active INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id, active);
+      CREATE TABLE IF NOT EXISTS item_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_key TEXT NOT NULL, texture_key TEXT NOT NULL, price_type TEXT NOT NULL,
+        sample_item TEXT NOT NULL, sample_texture TEXT, sample_currency TEXT,
+        last_seller TEXT, last_amount TEXT, last_price TEXT,
+        is_pokemon INTEGER NOT NULL DEFAULT 0, hidden_ability INTEGER NOT NULL DEFAULT 0, iv_percent REAL,
+        appearances INTEGER NOT NULL DEFAULT 0, first_seen_epoch INTEGER NOT NULL, last_seen_epoch INTEGER NOT NULL,
+        last_listing_id INTEGER NOT NULL, min_amount REAL, median_amount REAL, max_amount REAL,
+        amount_sum REAL NOT NULL DEFAULT 0, amount_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        UNIQUE(item_key, texture_key, price_type)
+      );
       CREATE TABLE IF NOT EXISTS alert_matches (
         id INTEGER PRIMARY KEY AUTOINCREMENT, alert_id INTEGER NOT NULL, listing_id INTEGER NOT NULL,
         user_id INTEGER NOT NULL, created_at INTEGER NOT NULL, seen_at INTEGER,

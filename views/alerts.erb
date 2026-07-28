@@ -3,14 +3,20 @@
   <div class="admin-stamp"><strong><%= @alerts.count { |alert| alert['active'].to_i == 1 } %></strong><span>ativos</span></div>
 </section>
 
+<% notices = { 'priority_textures' => 'Alertas lendários com qualquer TXT customizada ativados.' } %>
+<% if notices[params['notice']] %><p class="success-notice"><%= h(notices[params['notice']]) %></p><% end %>
+
 <section class="two-column-layout">
   <article class="card sticky-card">
     <span class="section-code">NOVO MONITOR</span><h2>Criar alerta</h2>
     <form method="post" action="/alerts" class="stack-form">
       <input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>">
       <label>Item, Pokémon ou vendedor<input name="query" required minlength="2" maxlength="80" placeholder="Ex.: Marshadow"></label>
+      <label>Modo<select name="match_mode"><option value="text">Texto geral</option><option value="item">Somente item/Pokémon</option><option value="seller">Somente vendedor</option><option value="texture">Somente TXT</option></select></label>
       <label>Moeda<select name="price_type"><option value="all">Qualquer moeda</option><option value="money">PokéCoins</option><option value="token">Tokens</option><option value="site">Saldo no site</option></select></label>
       <div class="field-pair"><label>Preço mínimo<input name="min_amount" type="number" min="0" step="0.01"></label><label>Preço máximo<input name="max_amount" type="number" min="0" step="0.01"></label></div>
+      <div class="field-pair"><label>TXT<input name="texture_query" maxlength="80" placeholder="custom, original ou nome da TXT"></label><label>IV mínimo %<input name="min_iv_percent" type="number" min="0" max="100" step="0.01"></label></div>
+      <label class="toggle-row"><input type="checkbox" name="hidden_ability_only" value="1"> Somente HA</label>
       <fieldset class="channel-options"><legend>Notificar também em</legend><label><input type="checkbox" name="discord" value="1"> Discord</label><label><input type="checkbox" name="telegram" value="1"> Telegram</label></fieldset>
       <button type="submit">Ativar monitor</button>
       <small>O site sempre registra os resultados. IDs externos são configurados em <a href="/settings">Preferências</a>.</small>
@@ -19,12 +25,26 @@
 
   <div>
     <section class="card">
+      <div class="priority-alert-box">
+        <div>
+          <span class="section-code">ATALHO TXT</span>
+          <h2>Lendários com qualquer TXT</h2>
+          <p>Cria alertas para Zacian, Kyogre, Rayquaza, Zamazenta e Eternatus quando a textura detectada não for original.</p>
+          <% unless @priority_missing.empty? %><small>Faltando: <%= h(@priority_missing.join(", ")) %></small><% end %>
+        </div>
+        <form method="post" action="/alerts/priority-textures">
+          <input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>">
+          <input type="hidden" name="discord" value="1">
+          <input type="hidden" name="telegram" value="1">
+          <button type="submit" <%= 'disabled' if @priority_missing.empty? %>><%= @priority_missing.empty? ? 'Já ativado' : 'Ativar pacote' %></button>
+        </form>
+      </div>
       <span class="section-code">MONITORES</span><h2>Alertas configurados</h2>
       <% if @alerts.empty? %><p class="empty-state">Você ainda não criou alertas.</p><% end %>
       <div class="alert-list">
         <% @alerts.each do |alert| %>
           <article class="alert-row <%= 'is-paused' if alert['active'].to_i.zero? %>">
-            <div><strong><%= h(alert['query']) %></strong><span><%= h(alert['price_type'] == 'all' ? 'todas as moedas' : alert['price_type']) %> · <%= h(alert['channels']) %></span><small><%= format_number(alert['min_amount']) %> — <%= format_number(alert['max_amount']) %></small></div>
+            <div><strong><%= h(alert['query']) %></strong><span><%= h(alert_description(alert)) %></span><small><%= format_number(alert['min_amount']) %> — <%= format_number(alert['max_amount']) %></small></div>
             <form method="post" action="/alerts/<%= alert['id'] %>" class="actions"><input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>"><button name="action" value="toggle" class="secondary"><%= alert['active'].to_i == 1 ? 'Pausar' : 'Ativar' %></button><button name="action" value="delete" class="danger">Excluir</button></form>
           </article>
         <% end %>
@@ -36,7 +56,7 @@
       <% if @matches.empty? %><p class="empty-state">Nenhum alerta encontrou uma oferta ainda.</p><% end %>
       <div class="match-list">
         <% @matches.each do |match| %>
-          <a href="/listing/<%= match['listing_id'] %>"><span><%= h(match['query']) %></span><strong><%= h(match['item']) %></strong><small><%= h(match['price']) %> · <%= h(match['seller']) %></small></a>
+          <a href="/listing/<%= match['listing_id'] %>"><span><%= h(match['query']) %></span><strong><%= h(match['item']) %></strong><small><%= h(match['price']) %> · <%= h(match['seller']) %><% unless match['texture'].to_s.empty? %> · TXT <%= h(match['texture']) %><% end %></small></a>
         <% end %>
       </div>
     </section>

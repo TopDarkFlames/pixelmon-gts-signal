@@ -23,6 +23,9 @@ Dir.mktmpdir do |directory|
   raise "coluna discord_user_id ausente" unless database.table_info("users").map { |column| column["name"] }.include?("discord_user_id")
   raise "coluna texture ausente" unless database.table_info("listings").map { |column| column["name"] }.include?("texture")
   raise "coluna hidden_ability ausente" unless database.table_info("listings").map { |column| column["name"] }.include?("hidden_ability")
+  raise "coluna texture_query ausente" unless database.table_info("alerts").map { |column| column["name"] }.include?("texture_query")
+  raise "tabela item_stats não foi preenchida" unless database.get_first_value("SELECT COUNT(*) FROM item_stats").to_i == 1
+  assert_equal("original", database.get_first_value("SELECT texture_key FROM item_stats"), "textura padrão no resumo")
   assert_equal(4_000_000.0, database.get_first_value("SELECT amount_value FROM listings"), "valor importado")
   assert_equal("sent", database.get_first_value("SELECT status FROM listings"), "anúncio global preservado")
 

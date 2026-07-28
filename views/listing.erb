@@ -16,6 +16,15 @@
   <div class="detail-actions"><span class="currency currency-<%= price_type(@listing) %> hero-price"><%= h("#{@listing['amount']} #{@listing['currency']}".strip) %></span><form method="post" action="/favorites" class="favorite-form"><input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>"><input type="hidden" name="kind" value="item"><input type="hidden" name="value" value="<%= h(@listing['item']) %>"><input type="hidden" name="return_to" value="/listing/<%= @listing['id'] %>"><button class="favorite-button detail-favorite <%= 'is-favorite' if favorite?('item', @listing['item']) %>" title="Favoritar item">★</button></form></div>
 </section>
 
+<% if @listing_stats %>
+  <section class="memory-strip">
+    <article><span>Aparições</span><strong><%= @listing_stats["appearances"] %>x</strong><small>mesmo item + TXT + moeda</small></article>
+    <article><span>Mediana</span><strong><%= h(format_number(@listing_stats["median_amount"])) %></strong><small>histórico salvo</small></article>
+    <article><span>Menor / maior</span><strong><%= h(format_number(@listing_stats["min_amount"])) %> · <%= h(format_number(@listing_stats["max_amount"])) %></strong><small>faixa registrada</small></article>
+    <article><span>Primeira vez</span><strong><%= h(format_utc(@listing_stats["first_seen_epoch"])) %></strong><small>arquivo vivo do GTS</small></article>
+  </section>
+<% end %>
+
 <% if pokemon_listing?(@listing) %>
   <section class="card pokemon-profile">
     <div class="panel-heading">

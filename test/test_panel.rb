@@ -69,6 +69,7 @@ Dir.mktmpdir do |directory|
   assert_response(light_response, "/dashboard tema claro")
   raise "opção de tema claro não foi preservada" unless light_response.body.include?('data-theme="light"')
   raise "menu não exibe histórico" unless dashboard_response.body.include?('href="/history"')
+  raise "menu não exibe texturas" unless dashboard_response.body.include?('href="/textures"')
   filtered_feed = request.get("/feed?type=money&period=24h", headers)
   assert_response(filtered_feed, "/feed")
   raise "cursor LIVE não usa o último ID global" unless filtered_feed.body.include?("data-latest-id=\"#{latest_id}\"")
@@ -89,6 +90,9 @@ Dir.mktmpdir do |directory|
   history_response = request.get("/history?q=Marshadow&texture=custom", headers)
   assert_response(history_response, "/history")
   raise "histórico não exibiu o Pokémon salvo" unless history_response.body.include?("Marshadow") && history_response.body.include?("Aparições registradas")
+  textures_response = request.get("/textures?q=Marshadow", headers)
+  assert_response(textures_response, "/textures")
+  raise "radar de texturas não exibiu a TXT salva" unless textures_response.body.include?("Radar de Texturas") && textures_response.body.include?("Hero")
   assert_response(request.get("/seller/ARKIO", headers), "/seller/:name")
   opportunities = request.get("/opportunities", headers)
   assert_response(opportunities, "/opportunities")
@@ -115,9 +119,22 @@ Dir.mktmpdir do |directory|
 
   response = request.post(
     "/alerts",
-    form_headers.merge(input: "csrf=test-csrf&query=Marshadow&price_type=money&max_amount=5000000")
+    form_headers.merge(input: "csrf=test-csrf&query=Marshadow&price_type=money&match_mode=item&texture_query=custom&min_iv_percent=70&hidden_ability_only=1&max_amount=5000000")
   )
   assert_response(response, "POST /alerts", 303)
+  alerts_page = request.get("/alerts", headers)
+  assert_response(alerts_page, "/alerts avançado")
+  raise "alerta avançado não exibiu TXT/IV/HA" unless alerts_page.body.include?("qualquer TXT customizada") && alerts_page.body.include?("IV &gt;= 70%") && alerts_page.body.include?("HA")
+
+  priority_response = request.post(
+    "/alerts/priority-textures",
+    form_headers.merge(input: "csrf=test-csrf&discord=1&telegram=1")
+  )
+  assert_response(priority_response, "POST /alerts/priority-textures", 303)
+  database = GTSStore.connect(ENV.fetch("PANEL_DB_PATH"))
+  priority_count = database.get_first_value("SELECT COUNT(*) FROM alerts WHERE texture_query='custom' AND query IN ('Zacian','Kyogre','Rayquaza','Zamazenta','Eternatus')").to_i
+  database.close
+  raise "pacote de alertas lendários não foi criado" unless priority_count == 5
 
   integration_response = request.post(
     "/admin/test-notification",
