@@ -17,6 +17,8 @@ Sistema local que acompanha o `latest.log` do Pixelmon, detecta anúncios do GTS
 | Componente | Tecnologia | Arquivo |
 | --- | --- | --- |
 | Captura e notificações | Python | `gts_dm_bot.py` |
+| Hover completo do chat | Forge 1.12.2 | `gts-bridge/` |
+| Sprites e cosméticos locais | Ruby | `lib/gts_assets.rb`, `lib/resource_archive.rb` |
 | Painel web | Ruby, Sinatra e ERB | `panel.rb`, `views/` |
 | Atualização do feed | HTMX e verificação incremental | `public/dashboard.js`, `public/htmx.min.js` |
 | Estilo | CSS | `public/styles.css` |
@@ -50,6 +52,7 @@ DISCORD_USER_ID=id_da_dm
 DISCORD_GUILD_ID=id_do_servidor
 DISCORD_ANNOUNCE_CHANNEL_ID=id_do_canal
 MINECRAFT_LOG_PATH=/caminho/para/minecraft/logs/latest.log
+GTS_ASSETS_ENABLED=true
 
 TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN=token_do_botfather
@@ -161,7 +164,7 @@ Rotas principais:
 - `/forgot-password`: recuperação de senha;
 - `/health`: verificação do serviço.
 
-O painel oferece tema claro/escuro, atualização automática por versão, filtros por período e preço, detector de oportunidades, alertas por usuário, telemetria das integrações e recuperação de senha.
+O painel oferece tema escuro por padrão com troca opcional para o tema claro, atualização automática por versão, filtros por período e preço, detector de oportunidades, alertas por usuário, telemetria das integrações e recuperação de senha. Quando os pacotes locais estão disponíveis, ele também resolve sprites comuns e customizados pelo nome, textura e Pokédex, além de imagens de cosméticos identificados pelo NBT. Os arquivos originais não são alterados; somente as imagens usadas são extraídas para o cache ignorado `runtime/listing-assets/`.
 
 A Central de Oportunidades usa até 30 dias de histórico, exige pelo menos três amostras comparáveis e remove valores extremos pelo intervalo interquartil quando existem oito ou mais registros. Cada sinal exibe quantidade de amostras e confiança baixa, média ou alta.
 

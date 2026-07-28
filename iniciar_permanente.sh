@@ -155,28 +155,7 @@ configure_funnel() {
 
   printf '%s\n' "$url" >"$SITE_URL_FILE"
   echo "Site permanente: $url"
-  announce_site "$url"
-}
-
-configure_cloudflare() {
-  echo "Iniciando Cloudflare Quick Tunnel como contingência..."
-  : >"$CLOUDFLARE_LOG"
-  start_process "Cloudflare Tunnel" "$CLOUDFLARE_LOG" cloudflared tunnel --url "$PANEL_URL"
-
-  local url=""
-  for _ in $(seq 1 120); do
-    url="$(grep -Eo 'https://[A-Za-z0-9-]+\.trycloudflare\.com' "$CLOUDFLARE_LOG" | tail -n 1 || true)"
-    [[ -n "$url" ]] && break
-    sleep 0.5
-  done
-  if [[ -z "$url" ]]; then
-    echo "Cloudflare não gerou uma URL pública." >&2
-    tail -n 60 "$CLOUDFLARE_LOG" >&2 || true
-    return 1
-  fi
-
-  printf '%s\n' "$url" >"$SITE_URL_FILE"
-  echo "Site público temporário: $url"
+  write_tunnel_status online "$url"
   announce_site "$url"
 }
 
@@ -188,6 +167,124 @@ announce_site() {
     echo "Falha ao anunciar URL:" >&2
     tail -n 60 "$ANNOUNCE_LOG" >&2 || true
   fi
+}
+
+announce_site_unavailable() {
+  local reason="$1"
+  if python3 -u gts_dm_bot.py --announce-site-unavailable "$reason" >"$ANNOUNCE_LOG" 2>&1; then
+    echo "Mensagem oficial marcada como reconectando."
+  else
+    echo "Falha ao marcar URL como reconectando:" >&2
+    tail -n 60 "$ANNOUNCE_LOG" >&2 || true
+  fi
+}
+
+write_tunnel_status() {
+  local status="$1"
+  local detail="$2"
+  printf '%s\t%s\t%s\n' "$status" "$(date +%s)" "$detail" >"$TUNNEL_STATUS_FILE"
+}
+
+cloudflare_retry_seconds() {
+  local seconds
+  seconds="$(env_value CLOUDFLARE_RETRY_SECONDS 300)"
+  [[ "$seconds" =~ ^[0-9]+$ ]] || seconds=300
+  (( seconds >= 30 )) || seconds=30
+  printf '%s\n' "$seconds"
+}
+
+public_health_ok() {
+  local url="$1"
+  python3 - "$url/health" <<'PY' >/dev/null 2>&1
+import sys
+import urllib.request
+
+try:
+    body = urllib.request.urlopen(sys.argv[1], timeout=8).read().decode()
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if body.strip() == "ok" else 1)
+PY
+}
+
+mark_tunnel_offline() {
+  local reason="$1"
+  rm -f "$SITE_URL_FILE"
+  write_tunnel_status offline "$reason"
+  announce_site_unavailable "$reason"
+}
+
+cloudflare_manager_loop() {
+  local retry_seconds
+  local tunnel_pid=""
+  local url=""
+  local health_failures=0
+  retry_seconds="$(cloudflare_retry_seconds)"
+
+  cleanup_cloudflare_child() {
+    if [[ -n "${tunnel_pid:-}" ]]; then
+      kill "$tunnel_pid" >/dev/null 2>&1 || true
+      wait "$tunnel_pid" >/dev/null 2>&1 || true
+      tunnel_pid=""
+    fi
+  }
+  trap cleanup_cloudflare_child INT TERM EXIT
+
+  while true; do
+    : >"$CLOUDFLARE_LOG"
+    echo "Iniciando Cloudflare Quick Tunnel como contingência..."
+    cloudflared tunnel --url "$PANEL_URL" >>"$CLOUDFLARE_LOG" 2>&1 &
+    tunnel_pid="$!"
+    url=""
+
+    for _ in $(seq 1 120); do
+      url="$(grep -Eo 'https://[A-Za-z0-9-]+\.trycloudflare\.com' "$CLOUDFLARE_LOG" | tail -n 1 || true)"
+      [[ -n "$url" ]] && break
+      if ! kill -0 "$tunnel_pid" >/dev/null 2>&1; then
+        wait "$tunnel_pid" >/dev/null 2>&1 || true
+        break
+      fi
+      sleep 0.5
+    done
+
+    if [[ -z "$url" ]]; then
+      cleanup_cloudflare_child
+      local reason="Cloudflare ainda não liberou URL pública; nova tentativa em ${retry_seconds}s."
+      echo "$reason" >&2
+      tail -n 60 "$CLOUDFLARE_LOG" >&2 || true
+      mark_tunnel_offline "$reason"
+      sleep "$retry_seconds"
+      continue
+    fi
+
+    printf '%s\n' "$url" >"$SITE_URL_FILE"
+    write_tunnel_status online "$url"
+    echo "Site público temporário: $url"
+    announce_site "$url"
+
+    health_failures=0
+    while kill -0 "$tunnel_pid" >/dev/null 2>&1; do
+      sleep 30
+      if public_health_ok "$url"; then
+        health_failures=0
+      else
+        health_failures=$((health_failures + 1))
+        echo "Falha de health-check público ($health_failures/3): $url" >&2
+      fi
+
+      if (( health_failures >= 3 )); then
+        echo "Túnel público ficou indisponível; reiniciando apenas o Cloudflare." >&2
+        cleanup_cloudflare_child
+        break
+      fi
+    done
+
+    wait "$tunnel_pid" >/dev/null 2>&1 || true
+    tunnel_pid=""
+    local reason="Túnel Cloudflare caiu; nova tentativa em ${retry_seconds}s."
+    mark_tunnel_offline "$reason"
+    sleep "$retry_seconds"
+  done
 }
 
 start_process() {
@@ -249,6 +346,7 @@ main() {
   CLOUDFLARE_LOG="$RUNTIME_DIR/cloudflare-contingencia.log"
   ANNOUNCE_LOG="$RUNTIME_DIR/anuncio-site-permanente.log"
   SITE_URL_FILE="$RUNTIME_DIR/site_url.txt"
+  TUNNEL_STATUS_FILE="$RUNTIME_DIR/tunnel_status.txt"
 
   backup_database
 
@@ -263,12 +361,13 @@ main() {
 
   start_process "painel Ruby" "$PANEL_LOG" ./executar_painel.sh
   wait_for_panel
+  start_process "bot GTS" "$BOT_LOG" python3 -u gts_dm_bot.py
+
   if wait_for_tailscale && configure_funnel; then
     echo "Hospedagem permanente ativa via Tailscale Funnel."
   else
-    configure_cloudflare
+    start_process "gerenciador Cloudflare" "$CLOUDFLARE_LOG" cloudflare_manager_loop
   fi
-  start_process "bot GTS" "$BOT_LOG" python3 -u gts_dm_bot.py
 
   echo "Pixelmon GTS permanente está online."
   monitor_processes

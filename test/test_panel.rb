@@ -10,9 +10,11 @@ def assert_response(response, path, expected = 200)
 end
 
 Dir.mktmpdir do |directory|
+  ENV["RACK_ENV"] = "test"
   ENV["PANEL_DB_PATH"] = File.join(directory, "panel.db")
   ENV["DISCORD_USER_ID"] = "123456789012345678"
   ENV["TELEGRAM_CHAT_ID"] = "123456789"
+  ENV["GTS_ASSETS_ENABLED"] = "false"
   require_relative "../panel"
   PixelmonGTSPanel.init_database!
 
@@ -29,7 +31,11 @@ Dir.mktmpdir do |directory|
     "fingerprint" => "panel-test", "detected_at" => Time.now.utc.iso8601, "status" => "sent",
     "item" => "Marshadow", "seller" => "ARKIO", "amount" => "4000000.00",
     "currency" => "PokéCoins", "price_type" => "money", "price" => "$ 4,000,000.00 PokéCoins",
-    "raw_chat" => "[GTS Global] test"
+    "raw_chat" => "[GTS Global] test", "source" => "bridge", "is_pokemon" => 1,
+    "ability" => "Technician", "hidden_ability" => 1, "nature" => "Jolly", "texture" => "Hero",
+    "iv_total" => 140, "iv_max" => 186, "iv_percent" => 75.27, "iv_hp" => 14,
+    "iv_attack" => 27, "iv_defense" => 6, "iv_sp_attack" => 31, "iv_sp_defense" => 31,
+    "iv_speed" => 31, "moves_json" => JSON.generate(["Spectral Thief", "Drain Punch"])
   })
   [10_000_000, 11_000_000, 12_000_000].each_with_index do |price, index|
     GTSStore.insert_listing(database, {
@@ -55,14 +61,34 @@ Dir.mktmpdir do |directory|
   request = Rack::MockRequest.new(PixelmonGTSPanel)
   headers = { "HTTP_COOKIE" => "gts_panel_session=test-session" }
   assert_response(request.get("/health"), "/health")
-  assert_response(request.get("/dashboard", headers), "/dashboard")
+  dashboard_response = request.get("/dashboard", headers)
+  assert_response(dashboard_response, "/dashboard")
+  raise "tema escuro não é o padrão" unless dashboard_response.body.include?('data-theme="dark"')
+  raise "color-scheme inicial não acompanha o tema" unless dashboard_response.body.include?('name="color-scheme" content="dark"')
+  light_response = request.get("/dashboard", "HTTP_COOKIE" => "gts_panel_session=test-session; gts_panel_theme=light")
+  assert_response(light_response, "/dashboard tema claro")
+  raise "opção de tema claro não foi preservada" unless light_response.body.include?('data-theme="light"')
+  raise "menu não exibe histórico" unless dashboard_response.body.include?('href="/history"')
   filtered_feed = request.get("/feed?type=money&period=24h", headers)
   assert_response(filtered_feed, "/feed")
   raise "cursor LIVE não usa o último ID global" unless filtered_feed.body.include?("data-latest-id=\"#{latest_id}\"")
   version_response = request.get("/feed/version", headers)
   assert_response(version_response, "/feed/version")
   raise "/feed/version retornou ID inválido" unless JSON.parse(version_response.body).fetch("id").to_i == latest_id
-  assert_response(request.get("/listing/#{listing_id}", headers), "/listing/:id")
+  listing_response = request.get("/listing/#{listing_id}", headers)
+  assert_response(listing_response, "/listing/:id")
+  raise "perfil Pixelmon não foi exibido" unless listing_response.body.include?("Perfil do Pokémon")
+  raise "textura não foi exibida" unless listing_response.body.include?("Hero")
+  raise "IVs não foram exibidos" unless listing_response.body.include?("75.27%")
+  raise "selo HA não foi exibido" unless listing_response.body.include?('class="ha-tag">HA')
+  raise "golpes não foram exibidos" unless listing_response.body.include?("Spectral Thief")
+  raise "seção de modelo 3D ainda está no detalhe" if listing_response.body.include?("RESOURCE PACK / MODELO 3D")
+  texture_feed = request.get("/feed?texture=custom", headers)
+  assert_response(texture_feed, "/feed?texture=custom")
+  raise "filtro de textura customizada não encontrou o Pokémon" unless texture_feed.body.include?("Marshadow")
+  history_response = request.get("/history?q=Marshadow&texture=custom", headers)
+  assert_response(history_response, "/history")
+  raise "histórico não exibiu o Pokémon salvo" unless history_response.body.include?("Marshadow") && history_response.body.include?("Aparições registradas")
   assert_response(request.get("/seller/ARKIO", headers), "/seller/:name")
   opportunities = request.get("/opportunities", headers)
   assert_response(opportunities, "/opportunities")

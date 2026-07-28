@@ -1,0 +1,89 @@
+<section class="dashboard-head compact-head">
+  <div>
+    <span class="eyebrow">ARCHIVE / ALL TIME</span>
+    <h1>Histórico do GTS</h1>
+    <p>Registro permanente de tudo que já apareceu no GTS Global. A venda em si só é confirmada se o servidor emitir esse evento.</p>
+  </div>
+  <a class="button-link" href="/dashboard">Voltar ao mercado</a>
+</section>
+
+<section class="stats-grid">
+  <article class="stat stat-total"><span>Anúncios salvos</span><strong><%= @history_metrics[:total] %></strong><small>linhas válidas no banco</small></article>
+  <article class="stat stat-money"><span>Itens únicos</span><strong><%= @history_metrics[:unique_items] %></strong><small>Pokémon e itens distintos</small></article>
+  <article class="stat stat-token"><span>Texturas custom</span><strong><%= @history_metrics[:custom_textures] %></strong><small>Pokémon com TXT detectada</small></article>
+  <article class="stat stat-site"><span>Tamanho do banco</span><strong><%= h(format_file_size(@history_metrics[:database_size])) %></strong><small>SQLite local</small></article>
+</section>
+
+<section class="market-panel history-panel">
+  <div class="panel-heading">
+    <div>
+      <span class="section-code">HISTORY 01 / <%= @total_rows %> GRUPOS</span>
+      <h2>Aparições registradas</h2>
+    </div>
+    <form class="feed-tools" method="get" action="/history">
+      <label class="search-box"><span>BUSCAR</span><input name="q" type="search" placeholder="Ex.: Zacian Fade" value="<%= h(@query) %>"></label>
+      <label class="compact-field"><span>PERÍODO</span><select name="period"><% [["all","Tudo"],["30d","30 dias"],["90d","90 dias"],["180d","180 dias"]].each do |value,label| %><option value="<%= value %>" <%= 'selected' if @period == value %>><%= label %></option><% end %></select></label>
+      <label class="compact-field"><span>ORDENAR</span><select name="sort"><% [["last_seen","Última vez"],["total","Mais vezes"],["name","Nome"],["price_low","Menor preço"],["price_high","Maior preço"]].each do |value,label| %><option value="<%= value %>" <%= 'selected' if @sort == value %>><%= label %></option><% end %></select></label>
+      <label class="compact-field"><span>TEXTURA</span><select name="texture"><% [["all","Todas"],["pokemon","Pokémon"],["custom","Customizada"],["original","Original"]].each do |value,label| %><option value="<%= value %>" <%= 'selected' if @texture_filter == value %>><%= label %></option><% end %></select></label>
+      <fieldset class="segments">
+        <legend class="sr-only">Filtrar por moeda</legend>
+        <% [["all", "Todos"], ["money", "PokéCoins"], ["token", "Tokens"], ["site", "Site"]].each do |value, label| %>
+          <input id="history-filter-<%= value %>" type="radio" name="type" value="<%= value %>" <%= "checked" if @filter == value %>>
+          <label for="history-filter-<%= value %>"><%= label %></label>
+        <% end %>
+      </fieldset>
+      <button type="submit">Filtrar</button>
+    </form>
+  </div>
+
+  <% if @history_rows.empty? %>
+    <p class="empty-state">Nenhuma aparição histórica encontrada neste filtro.</p>
+  <% else %>
+    <div class="table-wrap">
+      <table class="market-table history-table">
+        <thead><tr><th>Item/Pokémon</th><th>Aparições</th><th>Primeira vez</th><th>Última vez</th><th>Preço histórico</th><th>Último vendedor</th></tr></thead>
+        <tbody>
+          <% @history_rows.each do |row| %>
+            <% kind = price_type(row) %>
+            <% image_url = listing_image_url(row) %>
+            <tr data-type="<%= kind %>">
+              <td data-label="Item/Pokémon">
+                <div class="listing-identity">
+                  <% if image_url %><a class="listing-thumb" href="/listing/<%= row['id'] %>" aria-label="Ver <%= h(row['item']) %>"><img src="<%= image_url %>" alt="" loading="lazy"></a><% end %>
+                  <div>
+                    <a class="item-name" href="/listing/<%= row['id'] %>"><%= h(row["item"]) %></a>
+                    <div class="pokemon-meta">
+                      <% if pokemon_listing?(row) %><span>Pokémon</span><% end %>
+                      <% unless row["texture"].to_s.empty? %><span class="texture-tag <%= custom_texture?(row) ? 'custom' : 'original' %>">TXT <%= h(row["texture"]) %></span><% end %>
+                      <% if hidden_ability?(row) %><span class="ha-tag">HA</span><% end %>
+                      <% if row["iv_percent"] %><span>IV <%= format('%.2f', row["iv_percent"]) %>%</span><% end %>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td data-label="Aparições"><strong class="history-count"><%= row["appearances"] %>x</strong><small><%= row["history_confidence"] %></small></td>
+              <td class="time-cell" data-label="Primeira vez"><%= row["first_seen_epoch"].positive? ? h(format_utc(row["first_seen_epoch"])) : "—" %></td>
+              <td class="time-cell" data-label="Última vez"><%= row["last_seen_epoch"].positive? ? h(format_utc(row["last_seen_epoch"])) : "—" %></td>
+              <td data-label="Preço histórico">
+                <div class="history-price">
+                  <span class="currency currency-<%= kind %>">mín <%= h(format_number(row["history_min"])) %></span>
+                  <span class="currency currency-<%= kind %>">med <%= h(format_number(row["history_median"])) %></span>
+                  <span class="currency currency-<%= kind %>">máx <%= h(format_number(row["history_max"])) %></span>
+                </div>
+              </td>
+              <td class="seller-cell" data-label="Último vendedor"><a href="/seller/<%= CGI.escapeURIComponent(row['seller'].to_s) %>"><%= h(row["seller"]) %></a></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+    <% pages = (@total_rows.to_f / PixelmonGTSPanel::HISTORY_PAGE_SIZE).ceil %>
+    <% if pages > 1 %>
+      <nav class="pagination" aria-label="Paginação do histórico">
+        <% if @page > 1 %><a href="?<%= Rack::Utils.build_query(params.to_h.merge('page' => @page - 1)) %>">Anterior</a><% end %>
+        <span>Página <strong><%= @page %></strong> de <%= pages %></span>
+        <% if @page < pages %><a href="?<%= Rack::Utils.build_query(params.to_h.merge('page' => @page + 1)) %>">Próxima</a><% end %>
+      </nav>
+    <% end %>
+  <% end %>
+</section>

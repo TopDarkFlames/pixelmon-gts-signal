@@ -21,6 +21,8 @@ Dir.mktmpdir do |directory|
   database = GTSStore.connect(database_path)
   assert_equal(1, database.get_first_value("SELECT COUNT(*) FROM listings"), "importação única")
   raise "coluna discord_user_id ausente" unless database.table_info("users").map { |column| column["name"] }.include?("discord_user_id")
+  raise "coluna texture ausente" unless database.table_info("listings").map { |column| column["name"] }.include?("texture")
+  raise "coluna hidden_ability ausente" unless database.table_info("listings").map { |column| column["name"] }.include?("hidden_ability")
   assert_equal(4_000_000.0, database.get_first_value("SELECT amount_value FROM listings"), "valor importado")
   assert_equal("sent", database.get_first_value("SELECT status FROM listings"), "anúncio global preservado")
 
@@ -30,6 +32,13 @@ Dir.mktmpdir do |directory|
   })
   GTSStore.quarantine_non_global_listings(database)
   assert_equal("invalid", database.get_first_value("SELECT status FROM listings WHERE fingerprint='local-gts'"), "GTS local isolado")
+
+  GTSStore.insert_listing(database, {
+    "fingerprint" => "bridge-logger", "detected_at" => "2026-07-03T12:02:00+00:00", "status" => "sent",
+    "item" => "Marshadow", "raw_chat" => "[gtsbridge] [GTS Global] player added a Marshadow to the global GTS for price"
+  })
+  GTSStore.quarantine_non_global_listings(database)
+  assert_equal("duplicate_bridge_logger", database.get_first_value("SELECT reason FROM listings WHERE fingerprint='bridge-logger'"), "eco do logger isolado")
 ensure
   database&.close
 end

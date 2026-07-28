@@ -14,6 +14,19 @@ module GTSStore
     "notifications_enabled" => "INTEGER NOT NULL DEFAULT 1"
   }.freeze
 
+  LISTING_COLUMNS = {
+    "source" => "TEXT NOT NULL DEFAULT 'log'", "hover_action" => "TEXT", "hover_payload" => "TEXT",
+    "is_pokemon" => "INTEGER NOT NULL DEFAULT 0", "ability" => "TEXT",
+    "hidden_ability" => "INTEGER NOT NULL DEFAULT 0", "nature" => "TEXT",
+    "gender" => "TEXT", "pokemon_size" => "TEXT", "texture" => "TEXT", "unbreedable" => "TEXT",
+    "iv_total" => "INTEGER", "iv_max" => "INTEGER", "iv_percent" => "REAL", "iv_hp" => "INTEGER",
+    "iv_attack" => "INTEGER", "iv_defense" => "INTEGER", "iv_sp_attack" => "INTEGER",
+    "iv_sp_defense" => "INTEGER", "iv_speed" => "INTEGER", "ev_total" => "INTEGER",
+    "ev_max" => "INTEGER", "ev_percent" => "REAL", "ev_hp" => "INTEGER", "ev_attack" => "INTEGER",
+    "ev_defense" => "INTEGER", "ev_sp_attack" => "INTEGER", "ev_sp_defense" => "INTEGER",
+    "ev_speed" => "INTEGER", "moves_json" => "TEXT"
+  }.freeze
+
   def connect(path)
     database = SQLite3::Database.new(path)
     database.results_as_hash = true
@@ -27,6 +40,8 @@ module GTSStore
     database = connect(path)
     database.execute_batch(schema_sql)
     ensure_columns(database, "users", USER_COLUMNS)
+    ensure_columns(database, "listings", LISTING_COLUMNS)
+    database.execute("UPDATE listings SET hidden_ability=1 WHERE lower(COALESCE(ability, '')) LIKE '%(ha%'")
     import_csv(database, csv_path) if csv_path
     quarantine_non_global_listings(database)
   ensure
@@ -54,6 +69,21 @@ module GTSStore
   end
 
   def quarantine_non_global_listings(database)
+    duplicate_ids = database.execute(<<~SQL).map { |row| row["id"] }
+      SELECT id FROM listings
+      WHERE lower(raw_chat) LIKE '%[gtsbridge]%'
+    SQL
+    unless duplicate_ids.empty?
+      placeholders = (["?"] * duplicate_ids.length).join(", ")
+      database.execute(
+        "UPDATE notification_queue SET status='cancelled', last_error='duplicate_bridge_logger' WHERE listing_id IN (#{placeholders}) AND status IN ('pending','retry','processing')",
+        duplicate_ids
+      )
+      database.execute(
+        "UPDATE listings SET status='invalid', reason='duplicate_bridge_logger' WHERE id IN (#{placeholders})",
+        duplicate_ids
+      )
+    end
     database.execute(<<~SQL)
       UPDATE listings SET status = 'invalid', reason = 'not_global_gts'
       WHERE status = 'sent' AND lower(raw_chat) NOT LIKE '%to the global gts for%'
@@ -69,12 +99,31 @@ module GTSStore
     amount_value = row["amount_value"] || parse_amount(amount)
     epoch = row["detected_at_epoch"] || parse_epoch(detected_at)
 
-    database.execute(<<~SQL, [fingerprint, detected_at, epoch, row["status"], row["reason"], item, fold(item), row["seller"], amount, amount_value, row["currency"], row["price_type"], row["price"], row["raw_chat"], Time.now.to_i])
-      INSERT OR IGNORE INTO listings
-        (fingerprint, detected_at, detected_at_epoch, status, reason, item, item_key, seller,
-         amount, amount_value, currency, price_type, price, raw_chat, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    SQL
+    values = {
+      "fingerprint" => fingerprint, "detected_at" => detected_at, "detected_at_epoch" => epoch,
+      "status" => row["status"], "reason" => row["reason"], "item" => item, "item_key" => fold(item),
+      "seller" => row["seller"], "amount" => amount, "amount_value" => amount_value,
+      "currency" => row["currency"], "price_type" => row["price_type"], "price" => row["price"],
+      "raw_chat" => row["raw_chat"], "created_at" => Time.now.to_i,
+      "source" => row.fetch("source", "log"), "hover_action" => row["hover_action"],
+      "hover_payload" => row["hover_payload"], "is_pokemon" => row.fetch("is_pokemon", 0),
+      "ability" => row["ability"], "hidden_ability" => row.fetch("hidden_ability", 0),
+      "nature" => row["nature"], "gender" => row["gender"],
+      "pokemon_size" => row["pokemon_size"], "texture" => row["texture"],
+      "unbreedable" => row["unbreedable"], "iv_total" => row["iv_total"], "iv_max" => row["iv_max"],
+      "iv_percent" => row["iv_percent"], "iv_hp" => row["iv_hp"], "iv_attack" => row["iv_attack"],
+      "iv_defense" => row["iv_defense"], "iv_sp_attack" => row["iv_sp_attack"],
+      "iv_sp_defense" => row["iv_sp_defense"], "iv_speed" => row["iv_speed"],
+      "ev_total" => row["ev_total"], "ev_max" => row["ev_max"], "ev_percent" => row["ev_percent"],
+      "ev_hp" => row["ev_hp"], "ev_attack" => row["ev_attack"], "ev_defense" => row["ev_defense"],
+      "ev_sp_attack" => row["ev_sp_attack"], "ev_sp_defense" => row["ev_sp_defense"],
+      "ev_speed" => row["ev_speed"], "moves_json" => row["moves_json"]
+    }
+    columns = values.keys
+    database.execute(
+      "INSERT OR IGNORE INTO listings (#{columns.join(', ')}) VALUES (#{(['?'] * columns.length).join(', ')})",
+      values.values
+    )
     database.last_insert_row_id
   end
 
@@ -127,7 +176,16 @@ module GTSStore
         id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint TEXT NOT NULL UNIQUE,
         detected_at TEXT NOT NULL, detected_at_epoch INTEGER NOT NULL, status TEXT, reason TEXT,
         item TEXT NOT NULL, item_key TEXT NOT NULL, seller TEXT, amount TEXT, amount_value REAL,
-        currency TEXT, price_type TEXT, price TEXT, raw_chat TEXT, created_at INTEGER NOT NULL
+        currency TEXT, price_type TEXT, price TEXT, raw_chat TEXT, created_at INTEGER NOT NULL,
+        source TEXT NOT NULL DEFAULT 'log', hover_action TEXT, hover_payload TEXT,
+        is_pokemon INTEGER NOT NULL DEFAULT 0, ability TEXT,
+        hidden_ability INTEGER NOT NULL DEFAULT 0, nature TEXT, gender TEXT,
+        pokemon_size TEXT, texture TEXT, unbreedable TEXT,
+        iv_total INTEGER, iv_max INTEGER, iv_percent REAL, iv_hp INTEGER, iv_attack INTEGER,
+        iv_defense INTEGER, iv_sp_attack INTEGER, iv_sp_defense INTEGER, iv_speed INTEGER,
+        ev_total INTEGER, ev_max INTEGER, ev_percent REAL, ev_hp INTEGER, ev_attack INTEGER,
+        ev_defense INTEGER, ev_sp_attack INTEGER, ev_sp_defense INTEGER, ev_speed INTEGER,
+        moves_json TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_listings_detected ON listings(detected_at_epoch DESC);
       CREATE INDEX IF NOT EXISTS idx_listings_type_detected ON listings(price_type, detected_at_epoch DESC);

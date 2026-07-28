@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="light">
+    <meta name="color-scheme" content="<%= dark_theme? ? 'dark' : 'light' %>">
     <meta name="theme-color" content="#ef3340">
     <title><%= h(@title) %> · Pixelmon GTS Signal</title>
     <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=6">
     <script defer src="/htmx.min.js"></script>
     <script defer src="/dashboard.js?v=3"></script>
 </head>
@@ -28,6 +28,7 @@
       </form>
         <% if @current_user %>
           <a href="/dashboard">Mercado</a>
+          <a href="/history">Histórico</a>
           <a href="/opportunities">Oportunidades</a>
           <a href="/favorites">Favoritos</a>
           <a href="/alerts" class="nav-alerts">Alertas<% if @nav_alert_count.to_i.positive? %><b><%= @nav_alert_count %></b><% end %></a>

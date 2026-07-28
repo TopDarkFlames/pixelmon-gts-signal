@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import tempfile
@@ -38,6 +39,38 @@ class ParserTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertIsNone(bot.parse_listing(line, self.patterns))
 
+    def test_ignores_bridge_logger_echo(self):
+        line = "[18:05:01] [Client thread/INFO] [gtsbridge]: Captured Global GTS message: [GTS Global] ARKIO added a Marshadow to the global GTS for $ 4,000,000.00 PokéCoins!"
+        self.assertIsNone(bot.parse_listing(line, self.patterns))
+
+    def test_parses_pokemon_hover_from_bridge(self):
+        capture = {
+            "capturedAt": "2026-07-04T18:00:00Z",
+            "unformatted": "[GTS Global] ARKIO added a Hero Marshadow to the global GTS for $ 39,000,000.00 PokéCoins!",
+            "hoverEvents": [{
+                "action": "show_text",
+                "valueUnformatted": (
+                    "Hero Marshadow: Level 100 (#4637)\nSpecies: Marshadow\nAbility: Technician (HA)\n"
+                    "Nature: Jolly\nGender: None\nSize: Giant\nTexture: Hero\nUnbreedable: No\n\n"
+                    "IVs: 140/186 (75.27%)\nHP: 14 / Atk: 27 / Def: 6\nSpA: 31 / SpD: 31 / Spe: 31\n\n"
+                    "EVs: 510/510 (100.00%)\nHP: 6 / Atk: 252 / Def: 0\nSpA: 0 / SpD: 0 / Spe: 252\n\n"
+                    "Moves:\nSpectral Thief | Drain Punch | Assurance | Sucker Punch"
+                ),
+            }],
+        }
+        listing = bot.parse_bridge_capture(json.dumps(capture), self.patterns)
+        self.assertIsNotNone(listing)
+        self.assertEqual("bridge", listing.source)
+        self.assertTrue(listing.is_pokemon)
+        self.assertEqual("Hero", listing.texture)
+        self.assertEqual("Technician", listing.ability)
+        self.assertTrue(listing.hidden_ability)
+        self.assertEqual("Jolly", listing.nature)
+        self.assertEqual(140, listing.iv_total)
+        self.assertEqual(31, listing.iv_speed)
+        self.assertEqual(252, listing.ev_speed)
+        self.assertEqual("Spectral Thief", listing.moves[0])
+
     def test_sqlite_deduplication_and_alert_match(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "test.db"
@@ -56,6 +89,9 @@ class ParserTest(unittest.TestCase):
                     item="Marshadow", seller="ARKIO", amount="4,000,000.00", currency="PokéCoins",
                     price_type="money", price="$ 4,000,000.00 PokéCoins", raw_chat="GTS test",
                     fingerprint="stable-test", detected_at="2026-07-03T12:00:00+00:00",
+                    source="bridge", is_pokemon=True, ability="Technician", hidden_ability=True, nature="Jolly",
+                    texture="Hero", iv_total=140, iv_max=186, iv_percent=75.27,
+                    iv_speed=31, moves=("Spectral Thief", "Drain Punch"),
                 )
                 first_id = bot.append_history(self.config, listing, "sent")
                 second_id = bot.append_history(self.config, listing, "sent")
@@ -64,6 +100,10 @@ class ParserTest(unittest.TestCase):
                     self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM listings").fetchone()[0])
                     self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM alert_matches").fetchone()[0])
                     self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM notification_queue").fetchone()[0])
+                    details = connection.execute(
+                        "SELECT source, texture, iv_total, hidden_ability, moves_json FROM listings"
+                    ).fetchone()
+                    self.assertEqual(("bridge", "Hero", 140, 1, '["Spectral Thief", "Drain Punch"]'), details)
 
                 worker = bot.NotificationQueueWorker(self.config, "test-token")
                 job = worker._claim()

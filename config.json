@@ -2,6 +2,12 @@
   "read_from_start": false,
   "poll_interval_seconds": 0.03,
   "max_seen_lines": 2000,
+  "gts_bridge": {
+    "enabled": true,
+    "path": "",
+    "read_from_start": false,
+    "duplicate_window_seconds": 0.75
+  },
   "print_filtered": false,
   "use_embeds": true,
   "show_original_price": true,

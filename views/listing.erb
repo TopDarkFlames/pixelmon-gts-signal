@@ -1,7 +1,52 @@
 <section class="dashboard-head compact-head">
-  <div><span class="eyebrow">MARKET RECORD / #<%= @listing['id'] %></span><h1><%= h(@listing['item']) %></h1><p>Anunciado por <a href="/seller/<%= CGI.escapeURIComponent(@listing['seller'].to_s) %>"><strong><%= h(@listing['seller']) %></strong></a> em <%= h(format_detected_at(@listing['detected_at'])) %>.</p></div>
+  <div class="listing-title">
+    <% if listing_image_url(@listing) %><span class="listing-hero-asset"><img src="/listing/<%= @listing['id'] %>/image" alt="Sprite de <%= h(@listing['item']) %>"></span><% end %>
+    <div>
+      <span class="eyebrow">MARKET RECORD / #<%= @listing['id'] %></span>
+      <h1><%= h(@listing['item']) %></h1>
+      <% unless @listing['texture'].to_s.empty? %>
+        <div class="pokemon-meta detail-tags">
+          <span class="texture-tag <%= custom_texture?(@listing) ? 'custom' : 'original' %>">TXT <%= h(@listing['texture']) %></span>
+          <% unless pokemon_listing?(@listing) %><span>Textura avulsa</span><% end %>
+        </div>
+      <% end %>
+      <p>Anunciado por <a href="/seller/<%= CGI.escapeURIComponent(@listing['seller'].to_s) %>"><strong><%= h(@listing['seller']) %></strong></a> em <%= h(format_detected_at(@listing['detected_at'])) %>.</p>
+    </div>
+  </div>
   <div class="detail-actions"><span class="currency currency-<%= price_type(@listing) %> hero-price"><%= h("#{@listing['amount']} #{@listing['currency']}".strip) %></span><form method="post" action="/favorites" class="favorite-form"><input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>"><input type="hidden" name="kind" value="item"><input type="hidden" name="value" value="<%= h(@listing['item']) %>"><input type="hidden" name="return_to" value="/listing/<%= @listing['id'] %>"><button class="favorite-button detail-favorite <%= 'is-favorite' if favorite?('item', @listing['item']) %>" title="Favoritar item">★</button></form></div>
 </section>
+
+<% if pokemon_listing?(@listing) %>
+  <section class="card pokemon-profile">
+    <div class="panel-heading">
+      <div><span class="section-code">DADOS PIXELMON / HOVER CAPTURE</span><h2>Perfil do Pokémon</h2></div>
+      <% unless @listing['texture'].to_s.empty? %><span class="texture-status <%= custom_texture?(@listing) ? 'custom' : 'original' %>"><small>TEXTURA</small><strong><%= h(@listing['texture']) %></strong></span><% end %>
+    </div>
+    <div class="pokemon-profile-grid">
+      <% [["Habilidade", ability_name(@listing)], ["Natureza", @listing['nature']], ["Gênero", @listing['gender']], ["Tamanho", @listing['pokemon_size']], ["Reproduzível", @listing['unbreedable'].to_s.casecmp('no').zero? ? 'Sim' : (@listing['unbreedable'].to_s.empty? ? nil : 'Não')]].each do |label, value| %>
+        <% unless value.to_s.empty? %><div><span><%= label %></span><strong><%= h(value) %></strong></div><% end %>
+      <% end %>
+    </div>
+    <% if @listing['iv_total'] %>
+      <div class="stat-spread"><div class="spread-heading"><span>IVs <% if hidden_ability?(@listing) %><b class="ha-tag">HA</b><% end %></span><strong><%= @listing['iv_total'] %>/<%= @listing['iv_max'] %> · <%= format('%.2f', @listing['iv_percent']) %>%</strong></div><div class="spread-values"><% pokemon_stats(@listing, 'iv').each do |label, value| %><span><small><%= label %></small><strong><%= value.nil? ? '—' : value %></strong></span><% end %></div></div>
+    <% end %>
+    <% if @listing['ev_total'] %>
+      <div class="stat-spread ev"><div class="spread-heading"><span>EVs</span><strong><%= @listing['ev_total'] %>/<%= @listing['ev_max'] %> · <%= format('%.2f', @listing['ev_percent']) %>%</strong></div><div class="spread-values"><% pokemon_stats(@listing, 'ev').each do |label, value| %><span><small><%= label %></small><strong><%= value.nil? ? '—' : value %></strong></span><% end %></div></div>
+    <% end %>
+    <% moves = listing_moves(@listing) %>
+    <% unless moves.empty? %><div class="move-section"><span>GOLPES</span><div class="move-list"><% moves.each do |move| %><strong><%= h(move) %></strong><% end %></div></div><% end %>
+  </section>
+<% elsif !@listing['texture'].to_s.empty? %>
+  <section class="card texture-record">
+    <span class="section-code">TXT DO POKÉMON / ITEM DE TEXTURA</span>
+    <h2><%= h(@listing['item']) %></h2>
+    <div class="pokemon-meta detail-tags">
+      <span class="texture-tag custom">TXT <%= h(@listing['texture']) %></span>
+      <span>Sem IV no anúncio</span>
+    </div>
+    <p>Este registro é uma textura avulsa encontrada no NBT do item anunciado. Por isso o site mostra a TXT, mas não mostra IVs, nature e habilidade como em um Pokémon completo.</p>
+  </section>
+<% end %>
 
 <section class="card comparison-card">
   <div class="panel-heading"><div><span class="section-code">COMPARAÇÃO TEMPORAL</span><h2>Preço e volume</h2></div><span class="trend-badge <%= @weekly_trend.to_i > 0 ? 'up' : (@weekly_trend.to_i < 0 ? 'down' : 'flat') %>"><% if @weekly_trend %><%= @weekly_trend.positive? ? '↑' : (@weekly_trend.negative? ? '↓' : '→') %> <%= @weekly_trend.abs %>% na semana<% else %>tendência sem dados<% end %></span></div>

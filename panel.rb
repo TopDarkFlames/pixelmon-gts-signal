@@ -19,6 +19,7 @@ require "sinatra/base"
 require "sqlite3"
 require "time"
 require_relative "lib/gts_store"
+require_relative "lib/gts_assets"
 
 class PixelmonGTSPanel < Sinatra::Base
   ROOT = File.expand_path(__dir__)
@@ -31,6 +32,7 @@ class PixelmonGTSPanel < Sinatra::Base
   LOGIN_MAX_FAILURES = 5
   RESET_TTL = 60 * 60
   FEED_PAGE_SIZE = 40
+  HISTORY_PAGE_SIZE = 60
 
   configure do
     if File.exist?(ENV_PATH)
@@ -44,6 +46,8 @@ class PixelmonGTSPanel < Sinatra::Base
     end
 
     set :root, ROOT
+    set :environment, ENV.fetch("RACK_ENV", "production").to_sym
+    set :reload_templates, false
     set :views, File.join(ROOT, "views")
     set :public_folder, File.join(ROOT, "public")
     set :static, true
@@ -75,6 +79,28 @@ class PixelmonGTSPanel < Sinatra::Base
     def database_path
       configured = config_env("PANEL_DB_PATH", "access_panel.db")
       File.absolute_path(configured, ROOT)
+    end
+
+    def minecraft_root
+      configured = config_env("MINECRAFT_LOG_PATH")
+      return "" if configured.empty?
+
+      log_path = File.expand_path(configured)
+      File.dirname(File.dirname(log_path))
+    end
+
+    def asset_catalog
+      return unless env_bool("GTS_ASSETS_ENABLED", true)
+      return if minecraft_root.empty? || !Dir.exist?(minecraft_root)
+
+      @asset_catalog ||= GTSAssets.catalog(minecraft_root)
+    rescue StandardError => e
+      warn "Imagens do GTS indisponíveis: #{e.message}"
+      nil
+    end
+
+    def listing_image_url(row)
+      asset_catalog&.resolve(row) ? "/listing/#{row['id']}/image" : nil
     end
 
     def with_db
@@ -156,7 +182,7 @@ class PixelmonGTSPanel < Sinatra::Base
     end
 
     def theme
-      request.cookies["gts_panel_theme"] == "dark" ? "dark" : "light"
+      request.cookies["gts_panel_theme"] == "light" ? "light" : "dark"
     end
 
     def dark_theme?
@@ -209,6 +235,11 @@ class PixelmonGTSPanel < Sinatra::Base
       %w[all money token site].include?(type) ? type : "all"
     end
 
+    def feed_texture
+      value = params.fetch("texture", "all").to_s
+      %w[all pokemon custom original].include?(value) ? value : "all"
+    end
+
     def feed_page
       [params.fetch("page", "1").to_i, 1].max
     end
@@ -227,6 +258,16 @@ class PixelmonGTSPanel < Sinatra::Base
       %w[newest price_low price_high].include?(value) ? value : "newest"
     end
 
+    def history_period
+      value = params.fetch("period", "all").to_s
+      %w[30d 90d 180d all].include?(value) ? value : "all"
+    end
+
+    def history_sort
+      value = params.fetch("sort", "last_seen").to_s
+      %w[last_seen total name price_low price_high].include?(value) ? value : "last_seen"
+    end
+
     def listing_rows(database, limit: FEED_PAGE_SIZE)
       clauses = ["status = 'sent'"]
       values = []
@@ -234,10 +275,18 @@ class PixelmonGTSPanel < Sinatra::Base
         clauses << "price_type = ?"
         values << feed_filter
       end
+      case feed_texture
+      when "pokemon"
+        clauses << "is_pokemon = 1"
+      when "custom"
+        clauses << "trim(COALESCE(texture, '')) <> '' AND lower(texture) <> 'original'"
+      when "original"
+        clauses << "is_pokemon = 1 AND lower(texture) = 'original'"
+      end
       unless feed_query.empty?
-        clauses << "(item_key LIKE ? OR lower(seller) LIKE ?)"
+        clauses << "(item_key LIKE ? OR lower(seller) LIKE ? OR lower(COALESCE(texture, '')) LIKE ? OR lower(COALESCE(nature, '')) LIKE ? OR lower(COALESCE(ability, '')) LIKE ?)"
         search = "%#{GTSStore.fold(feed_query)}%"
-        values.concat([search, search])
+        values.concat([search, search, search, search, search])
       end
       seconds = { "1h" => 3_600, "24h" => 86_400, "7d" => 604_800, "30d" => 2_592_000 }[feed_period]
       if seconds
@@ -265,6 +314,83 @@ class PixelmonGTSPanel < Sinatra::Base
         values + [limit, (feed_page - 1) * limit]
       )
       [enrich_opportunities(database, rows), total]
+    end
+
+    def history_rows(database)
+      clauses = ["status = 'sent'"]
+      values = []
+      unless feed_filter == "all"
+        clauses << "price_type = ?"
+        values << feed_filter
+      end
+      case feed_texture
+      when "pokemon"
+        clauses << "is_pokemon = 1"
+      when "custom"
+        clauses << "trim(COALESCE(texture, '')) <> '' AND lower(texture) <> 'original'"
+      when "original"
+        clauses << "is_pokemon = 1 AND lower(texture) = 'original'"
+      end
+      unless feed_query.empty?
+        clauses << "(item_key LIKE ? OR lower(seller) LIKE ? OR lower(COALESCE(texture, '')) LIKE ? OR lower(COALESCE(nature, '')) LIKE ? OR lower(COALESCE(ability, '')) LIKE ?)"
+        search = "%#{GTSStore.fold(feed_query)}%"
+        values.concat([search, search, search, search, search])
+      end
+      seconds = { "30d" => 2_592_000, "90d" => 7_776_000, "180d" => 15_552_000 }[history_period]
+      if seconds
+        clauses << "detected_at_epoch >= ?"
+        values << now - seconds
+      end
+
+      records = database.execute(
+        "SELECT id, item, item_key, seller, amount_value, amount, currency, price, price_type, detected_at, detected_at_epoch, is_pokemon, texture, hidden_ability, iv_percent FROM listings WHERE #{clauses.join(' AND ')}",
+        values
+      )
+      groups = records.group_by { |row| [row["item_key"], row["texture"].to_s.downcase, row["price_type"]] }.map do |_key, rows|
+        latest = rows.max_by { |row| row["detected_at_epoch"].to_i }
+        first = rows.min_by { |row| row["detected_at_epoch"].to_i }
+        stats = robust_price_stats(rows.map { |row| row["amount_value"] })
+        latest.merge(
+          "appearances" => rows.length,
+          "first_seen_epoch" => first["detected_at_epoch"].to_i,
+          "last_seen_epoch" => latest["detected_at_epoch"].to_i,
+          "first_seen_at" => first["detected_at"],
+          "last_seen_at" => latest["detected_at"],
+          "history_min" => stats[:min],
+          "history_median" => stats[:median],
+          "history_max" => stats[:max],
+          "history_samples" => stats[:count],
+          "history_confidence" => stats[:confidence]
+        )
+      end
+
+      sorted = groups.sort_by do |row|
+        case history_sort
+        when "total"
+          [-row["appearances"].to_i, -row["last_seen_epoch"].to_i]
+        when "name"
+          [GTSStore.fold(row["item"]), -row["last_seen_epoch"].to_i]
+        when "price_low"
+          [row["history_min"] || Float::INFINITY, -row["last_seen_epoch"].to_i]
+        when "price_high"
+          [-(row["history_max"] || 0), -row["last_seen_epoch"].to_i]
+        else
+          [-row["last_seen_epoch"].to_i, GTSStore.fold(row["item"])]
+        end
+      end
+      total = sorted.length
+      offset = (feed_page - 1) * HISTORY_PAGE_SIZE
+      [sorted.slice(offset, HISTORY_PAGE_SIZE) || [], total]
+    end
+
+    def history_metrics(database)
+      {
+        total: database.get_first_value("SELECT COUNT(*) FROM listings WHERE status='sent'").to_i,
+        unique_items: database.get_first_value("SELECT COUNT(DISTINCT item_key) FROM listings WHERE status='sent'").to_i,
+        custom_textures: database.get_first_value("SELECT COUNT(*) FROM listings WHERE status='sent' AND trim(COALESCE(texture, '')) <> '' AND lower(texture) <> 'original'").to_i,
+        first_seen: database.get_first_value("SELECT MIN(detected_at_epoch) FROM listings WHERE status='sent'").to_i,
+        database_size: File.file?(database_path) ? File.size(database_path) : 0
+      }
     end
 
     def enrich_opportunities(database, rows)
@@ -368,8 +494,12 @@ class PixelmonGTSPanel < Sinatra::Base
     def system_health(database)
       statuses = database.execute("SELECT * FROM service_status ORDER BY name").to_h { |row| [row["name"], row] }
       site_url_path = File.join(ROOT, "runtime", "site_url.txt")
+      tunnel_status_path = File.join(ROOT, "runtime", "tunnel_status.txt")
       statuses["panel"] = { "name" => "panel", "status" => "online", "detail" => "Ruby/Puma", "updated_at" => now }
-      if File.file?(site_url_path)
+      if File.file?(tunnel_status_path)
+        status, timestamp, detail = File.read(tunnel_status_path).strip.split("\t", 3)
+        statuses["tunnel"] = { "name" => "tunnel", "status" => status.to_s, "detail" => detail.to_s, "updated_at" => timestamp.to_i }
+      elsif File.file?(site_url_path)
         statuses["tunnel"] = { "name" => "tunnel", "status" => "online", "detail" => File.read(site_url_path).strip, "updated_at" => File.mtime(site_url_path).to_i }
       end
       statuses
@@ -380,6 +510,17 @@ class PixelmonGTSPanel < Sinatra::Base
 
       whole, decimal = format("%.2f", value.to_f).split(".", 2)
       "#{whole.reverse.scan(/.{1,3}/).join('.').reverse},#{decimal}"
+    end
+
+    def format_file_size(bytes)
+      units = %w[B KB MB GB]
+      size = bytes.to_f
+      unit = units.shift
+      while size >= 1024 && !units.empty?
+        size /= 1024
+        unit = units.shift
+      end
+      unit == "B" ? "#{size.to_i} #{unit}" : "#{format('%.1f', size)} #{unit}"
     end
 
     def confidence_class(value)
@@ -396,7 +537,7 @@ class PixelmonGTSPanel < Sinatra::Base
     end
 
     def market_return_path
-      allowed = params.to_h.select { |key, _value| %w[q type period sort min max page].include?(key) }
+      allowed = params.to_h.select { |key, _value| %w[q type texture period sort min max page].include?(key) }
       query = Rack::Utils.build_query(allowed)
       query.empty? ? "/dashboard" : "/dashboard?#{query}"
     end
@@ -404,6 +545,37 @@ class PixelmonGTSPanel < Sinatra::Base
     def price_type(row)
       type = row["price_type"].to_s
       %w[money token site].include?(type) ? type : "unknown"
+    end
+
+    def pokemon_listing?(row)
+      row["is_pokemon"].to_i == 1
+    end
+
+    def hidden_ability?(row)
+      row["hidden_ability"].to_i == 1 || row["ability"].to_s.match?(/\(\s*HA\b\s*\)?/i)
+    end
+
+    def ability_name(row)
+      row["ability"].to_s.gsub(/\(\s*HA\b\s*\)?/i, "").strip
+    end
+
+    def custom_texture?(row)
+      !row["texture"].to_s.empty? && row["texture"].to_s.casecmp("original") != 0
+    end
+
+    def listing_moves(row)
+      parsed = JSON.parse(row["moves_json"].to_s)
+      parsed.is_a?(Array) ? parsed.map(&:to_s).reject(&:empty?) : []
+    rescue JSON::ParserError
+      []
+    end
+
+    def pokemon_stats(row, prefix)
+      [
+        ["HP", row["#{prefix}_hp"]], ["Atk", row["#{prefix}_attack"]],
+        ["Def", row["#{prefix}_defense"]], ["SpA", row["#{prefix}_sp_attack"]],
+        ["SpD", row["#{prefix}_sp_defense"]], ["Spe", row["#{prefix}_speed"]]
+      ]
     end
 
     def page(title, template, **locals)
@@ -507,6 +679,7 @@ class PixelmonGTSPanel < Sinatra::Base
       database.execute("UPDATE invite_codes SET used_count = used_count + 1 WHERE id = ?", [invite["id"]])
       [true, ""]
     end
+
   end
 
   before do
@@ -637,6 +810,7 @@ class PixelmonGTSPanel < Sinatra::Base
       SQL
     end
     @filter = feed_filter
+    @texture_filter = feed_texture
     @query = feed_query
     @page = feed_page
     page("Dashboard", :dashboard)
@@ -650,6 +824,7 @@ class PixelmonGTSPanel < Sinatra::Base
       @stats = dashboard_stats(database)
     end
     @filter = feed_filter
+    @texture_filter = feed_texture
     @query = feed_query
     @page = feed_page
     @oob = params["oob"] != "0"
@@ -664,6 +839,21 @@ class PixelmonGTSPanel < Sinatra::Base
       database.get_first_value("SELECT COALESCE(MAX(id), 0) FROM listings WHERE status='sent'").to_i
     end
     JSON.generate(id: latest_id, checked_at: now)
+  end
+
+  get "/history" do
+    approved!
+    with_db do |database|
+      @history_rows, @total_rows = history_rows(database)
+      @history_metrics = history_metrics(database)
+    end
+    @filter = feed_filter
+    @texture_filter = feed_texture
+    @query = feed_query
+    @page = feed_page
+    @period = history_period
+    @sort = history_sort
+    page("Histórico", :history)
   end
 
   get "/notifications/check" do
@@ -717,6 +907,21 @@ class PixelmonGTSPanel < Sinatra::Base
       @period_comparison, @weekly_trend = item_period_comparison(database, @listing["item_key"], @listing["price_type"])
     end
     page("Detalhes", :listing)
+  end
+
+  get "/listing/:id/image" do
+    approved!
+    listing = with_db do |database|
+      database.get_first_row("SELECT * FROM listings WHERE id = ? AND status='sent'", [params["id"].to_i])
+    end
+    halt 404 unless listing && asset_catalog
+
+    image_path = asset_catalog.cache(listing, File.join(ROOT, "runtime", "listing-assets"))
+    halt 404 unless image_path
+
+    content_type "image/png"
+    headers "Cache-Control" => "private, max-age=86400"
+    send_file image_path, disposition: "inline"
   end
 
   get "/seller/:name" do

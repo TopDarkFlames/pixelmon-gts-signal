@@ -5,14 +5,19 @@ import argparse
 import hashlib
 import json
 import os
+import base64
+import random
 import re
 import sqlite3
+import socket
+import ssl
+import struct
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,10 +30,21 @@ CONFIG_PATH = BASE_DIR / "config.json"
 SITE_MESSAGE_ID_PATH = BASE_DIR / "runtime" / "discord_site_message_id.txt"
 PERMANENT_ACCESS_URL_PATH = BASE_DIR / "runtime" / "permanent_access_url.txt"
 DISCORD_API = "https://discord.com/api/v10"
+DISCORD_GATEWAY_HOST = "gateway.discord.gg"
+DISCORD_GATEWAY_PATH = "/?v=10&encoding=json"
 TELEGRAM_API = "https://api.telegram.org"
 DISCORD_TIMEOUT_SECONDS = 8
 TELEGRAM_TIMEOUT_SECONDS = 6
 GLOBAL_GTS_MARKER = re.compile(r"\bto\s+the\s+global\s+GTS\s+for\b", re.IGNORECASE)
+POKEMON_HOVER_MARKERS = ("ability:", "nature:", "ivs:", "evs:", "moves:")
+STAT_NAMES = {
+    "hp": "hp",
+    "atk": "attack",
+    "def": "defense",
+    "spa": "sp_attack",
+    "spd": "sp_defense",
+    "spe": "speed",
+}
 
 
 @dataclass(frozen=True)
@@ -42,6 +58,36 @@ class GtsListing:
     price_type: str = ""
     fingerprint: str = ""
     detected_at: str = ""
+    source: str = "log"
+    hover_action: str = ""
+    hover_payload: str = ""
+    is_pokemon: bool = False
+    ability: str = ""
+    hidden_ability: bool = False
+    nature: str = ""
+    gender: str = ""
+    size: str = ""
+    texture: str = ""
+    unbreedable: str = ""
+    iv_total: int | None = None
+    iv_max: int | None = None
+    iv_percent: float | None = None
+    iv_hp: int | None = None
+    iv_attack: int | None = None
+    iv_defense: int | None = None
+    iv_sp_attack: int | None = None
+    iv_sp_defense: int | None = None
+    iv_speed: int | None = None
+    ev_total: int | None = None
+    ev_max: int | None = None
+    ev_percent: float | None = None
+    ev_hp: int | None = None
+    ev_attack: int | None = None
+    ev_defense: int | None = None
+    ev_sp_attack: int | None = None
+    ev_sp_defense: int | None = None
+    ev_speed: int | None = None
+    moves: tuple[str, ...] = ()
 
     @property
     def pokemon(self) -> str:
@@ -52,6 +98,40 @@ class GtsListing:
 class FilterResult:
     allowed: bool
     reason: str = ""
+
+
+LISTING_DETAIL_COLUMNS = {
+    "source": "TEXT NOT NULL DEFAULT 'log'",
+    "hover_action": "TEXT",
+    "hover_payload": "TEXT",
+    "is_pokemon": "INTEGER NOT NULL DEFAULT 0",
+    "ability": "TEXT",
+    "hidden_ability": "INTEGER NOT NULL DEFAULT 0",
+    "nature": "TEXT",
+    "gender": "TEXT",
+    "pokemon_size": "TEXT",
+    "texture": "TEXT",
+    "unbreedable": "TEXT",
+    "iv_total": "INTEGER",
+    "iv_max": "INTEGER",
+    "iv_percent": "REAL",
+    "iv_hp": "INTEGER",
+    "iv_attack": "INTEGER",
+    "iv_defense": "INTEGER",
+    "iv_sp_attack": "INTEGER",
+    "iv_sp_defense": "INTEGER",
+    "iv_speed": "INTEGER",
+    "ev_total": "INTEGER",
+    "ev_max": "INTEGER",
+    "ev_percent": "REAL",
+    "ev_hp": "INTEGER",
+    "ev_attack": "INTEGER",
+    "ev_defense": "INTEGER",
+    "ev_sp_attack": "INTEGER",
+    "ev_sp_defense": "INTEGER",
+    "ev_speed": "INTEGER",
+    "moves_json": "TEXT",
+}
 
 
 def load_dotenv(path: Path) -> None:
@@ -168,6 +248,9 @@ def parse_price_details(raw_price: str) -> tuple[str, str, str, str]:
 
 
 def parse_listing(log_line: str, patterns: list[re.Pattern[str]]) -> GtsListing | None:
+    if "[gtsbridge]" in strip_minecraft_codes(log_line).casefold():
+        return None
+
     chat_text = extract_chat_text(log_line)
     if not GLOBAL_GTS_MARKER.search(chat_text):
         return None
@@ -197,6 +280,124 @@ def parse_listing(log_line: str, patterns: list[re.Pattern[str]]) -> GtsListing 
             )
 
     return None
+
+
+def parse_stat_values(section: str) -> dict[str, int]:
+    values: dict[str, int] = {}
+    clean = strip_minecraft_codes(section)
+    pattern = re.compile(r"\b(HP|Atk|Def|SpA|SpD|Spe):\s*(\d+)(?:\s*->\s*(\d+))?", re.IGNORECASE)
+    for match in pattern.finditer(clean):
+        key = STAT_NAMES[match.group(1).casefold()]
+        values[key] = int(match.group(3) or match.group(2))
+    return values
+
+
+def parse_pokemon_hover(hover_text: str) -> dict[str, Any] | None:
+    clean = strip_minecraft_codes(hover_text).replace("\r\n", "\n").replace("\r", "\n")
+    folded = clean.casefold()
+    if not all(marker in folded for marker in POKEMON_HOVER_MARKERS):
+        return None
+
+    details: dict[str, Any] = {}
+    for label, key in {
+        "Nature": "nature",
+        "Gender": "gender",
+        "Size": "size",
+        "Texture": "texture",
+        "Unbreedable": "unbreedable",
+    }.items():
+        match = re.search(rf"(?im)^\s*{label}:\s*(.+?)\s*$", clean)
+        details[key] = normalize_field(match.group(1)) if match else ""
+
+    ability_match = re.search(r"(?im)^\s*Ability:\s*(.+?)\s*$", clean)
+    raw_ability = re.sub(r"\s+", " ", ability_match.group(1)).strip() if ability_match else ""
+    details["hidden_ability"] = bool(
+        re.search(r"\(\s*HA\s*\)|\bHidden Ability\b", raw_ability, re.IGNORECASE)
+    )
+    details["ability"] = normalize_field(
+        re.sub(r"\(\s*HA\s*\)|\bHidden Ability\b", "", raw_ability, flags=re.IGNORECASE)
+    )
+
+    for prefix, next_prefix in (("iv", "EVs:"), ("ev", "Moves:")):
+        heading = "IVs:" if prefix == "iv" else "EVs:"
+        match = re.search(
+            rf"(?is){heading}\s*(\d+)\s*/\s*(\d+)\s*\(([0-9.]+)%\)(.*?)(?=^\s*{next_prefix}|\Z)",
+            clean,
+            re.MULTILINE,
+        )
+        if not match:
+            continue
+        details[f"{prefix}_total"] = int(match.group(1))
+        details[f"{prefix}_max"] = int(match.group(2))
+        details[f"{prefix}_percent"] = float(match.group(3))
+        for stat, value in parse_stat_values(match.group(4)).items():
+            details[f"{prefix}_{stat}"] = value
+
+    moves_match = re.search(r"(?is)^\s*Moves:\s*\n\s*(.+?)\s*$", clean, re.MULTILINE)
+    details["moves"] = tuple(
+        normalize_field(move) for move in (moves_match.group(1).split("|") if moves_match else [])
+        if normalize_field(move) and fold_text(normalize_field(move)) != "none"
+    )
+    return details
+
+
+def parse_bridge_capture(raw_line: str, patterns: list[re.Pattern[str]]) -> GtsListing | None:
+    try:
+        capture = json.loads(raw_line)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(capture, dict):
+        return None
+
+    raw_chat = str(capture.get("unformatted", ""))
+    listing = parse_listing(raw_chat, patterns)
+    if not listing:
+        return None
+
+    hover_events = capture.get("hoverEvents", [])
+    hover_events = hover_events if isinstance(hover_events, list) else []
+    selected_hover: dict[str, Any] = {}
+    pokemon_details: dict[str, Any] | None = None
+    texture_token = ""
+
+    for candidate in hover_events:
+        if not isinstance(candidate, dict):
+            continue
+        value = str(candidate.get("valueUnformatted", ""))
+        details = parse_pokemon_hover(value)
+        if details:
+            selected_hover = candidate
+            pokemon_details = details
+            break
+        if not selected_hover:
+            selected_hover = candidate
+        token_match = re.search(r'(?:TextureTokenID|CustomTexture)\s*:\s*"([^"\\]+)"', value)
+        if token_match:
+            texture_token = token_match.group(1)
+            selected_hover = candidate
+
+    captured_at = str(capture.get("capturedAt", "")) or datetime.now(timezone.utc).isoformat()
+    fingerprint = hashlib.sha256(
+        f"bridge\0{captured_at}\0{raw_chat}".encode("utf-8", errors="replace")
+    ).hexdigest()
+    hover_payload = str(selected_hover.get("valueUnformatted", ""))
+    base_changes: dict[str, Any] = {
+        "detected_at": captured_at,
+        "fingerprint": fingerprint,
+        "source": "bridge",
+        "hover_action": str(selected_hover.get("action", "")),
+        "hover_payload": hover_payload,
+        "texture": texture_token,
+    }
+    if pokemon_details:
+        base_changes.update(pokemon_details)
+        base_changes["is_pokemon"] = True
+    return replace(listing, **base_changes)
+
+
+def listing_signature(listing: GtsListing) -> str:
+    normalized = re.sub(r"\s+", " ", strip_minecraft_codes(listing.raw_chat)).strip().casefold()
+    return hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()
 
 
 def compile_patterns(config: dict[str, Any]) -> list[re.Pattern[str]]:
@@ -285,6 +486,19 @@ def format_site_message(site_url: str) -> str:
     )
 
 
+def format_site_unavailable_message(reason: str) -> str:
+    reason = reason.strip() or "aguardando a Cloudflare liberar um novo endereço"
+    updated_at = int(time.time())
+    return (
+        "📡 **PAINEL PIXELMON GTS — LINK OFICIAL**\n"
+        "Esta mensagem é atualizada automaticamente quando o endereço muda.\n\n"
+        "🔄 **Status:** reconectando o túnel público\n"
+        f"🧭 **Motivo:** {reason}\n"
+        "🏠 **Painel local:** http://127.0.0.1:8080\n\n"
+        f"🟡 Reconectando • Atualizado <t:{updated_at}:R>"
+    )
+
+
 def telegram_enabled() -> bool:
     return env_bool("TELEGRAM_ENABLED", False)
 
@@ -352,13 +566,25 @@ def send_telegram_text_optional(content: str) -> None:
 def format_telegram_listing(listing: GtsListing) -> str:
     marker = currency_marker(listing)
     price_display = f"{listing.amount} {listing.currency}".strip() or listing.price
-    return (
+    message = (
         f"{marker} GTS Global | {friendly_price_type(listing)}\n"
         f"💎 Item/Pokémon: {listing.item}\n"
         f"💰 Preço: {price_display}\n"
         f"👤 Vendedor: {listing.seller or 'desconhecido'}\n"
         f"🧾 Original: {listing.price}"
     )
+    if listing.is_pokemon:
+        message += (
+            f"\n\n🧬 Nature: {listing.nature or 'desconhecida'}"
+            f"\n⚡ Ability: {listing.ability or 'desconhecida'}"
+            f"\n🎨 Textura: {listing.texture or 'desconhecida'}"
+            f"\n📊 IVs: {format_iv_summary(listing)}{' • HA' if listing.hidden_ability else ''}"
+        )
+        if listing.moves:
+            message += f"\n🥊 Golpes: {' | '.join(listing.moves)}"
+    elif listing.texture:
+        message += f"\n🎨 Textura detectada: {listing.texture}"
+    return message
 
 
 def format_telegram_site(site_url: str, permanent_access_url: str) -> str:
@@ -369,6 +595,16 @@ def format_telegram_site(site_url: str, permanent_access_url: str) -> str:
         f"📌 Link fixo no Discord: {permanent_access_url}\n"
         f"📝 Registro: {site_url}/register\n"
         f"🛡️ Admin: {site_url}/admin"
+    )
+
+
+def format_telegram_site_unavailable(reason: str, permanent_access_url: str) -> str:
+    reason = reason.strip() or "aguardando a Cloudflare liberar um novo endereço"
+    return (
+        "📡 Painel Pixelmon GTS\n\n"
+        "🔄 Link público reconectando\n"
+        f"🧭 Motivo: {reason}\n"
+        f"📌 Mensagem fixa no Discord: {permanent_access_url}"
     )
 
 
@@ -464,6 +700,25 @@ def code_block(value: str, language: str = "text", limit: int = 980) -> str:
     return f"```{language}\n{truncate(value, limit)}\n```"
 
 
+def format_iv_summary(listing: GtsListing) -> str:
+    if listing.iv_total is None or listing.iv_max is None:
+        return "não informado"
+    percentage = f" ({listing.iv_percent:.2f}%)" if listing.iv_percent is not None else ""
+    return f"{listing.iv_total}/{listing.iv_max}{percentage}"
+
+
+def format_stat_line(listing: GtsListing, prefix: str) -> str:
+    labels = (
+        ("HP", "hp"), ("Atk", "attack"), ("Def", "defense"),
+        ("SpA", "sp_attack"), ("SpD", "sp_defense"), ("Spe", "speed"),
+    )
+    parts = []
+    for label, name in labels:
+        value = getattr(listing, f"{prefix}_{name}")
+        parts.append(f"{label} {value if value is not None else '—'}")
+    return " • ".join(parts)
+
+
 def build_discord_payload(config: dict[str, Any], listing: GtsListing, fallback_message: str) -> dict[str, Any]:
     if not bool(config.get("use_embeds", True)):
         return {"content": fallback_message}
@@ -480,6 +735,28 @@ def build_discord_payload(config: dict[str, Any], listing: GtsListing, fallback_
     ]
     if bool(config.get("show_original_price", True)):
         fields.append({"name": f"{marker} Preço original", "value": f"`{truncate(listing.price, 1000)}`", "inline": False})
+    if listing.is_pokemon:
+        fields.extend([
+            {
+                "name": "🧬 Nature / Ability",
+                "value": f"**{truncate(listing.nature or 'desconhecida', 100)}** • {truncate(listing.ability or 'desconhecida', 180)}{' • **HA**' if listing.hidden_ability else ''}",
+                "inline": True,
+            },
+            {
+                "name": "🎨 Textura",
+                "value": f"**{truncate(listing.texture or 'desconhecida', 240)}**",
+                "inline": True,
+            },
+            {
+                "name": f"📊 IVs{' • HA' if listing.hidden_ability else ''}",
+                "value": f"**{format_iv_summary(listing)}**\n{truncate(format_stat_line(listing, 'iv'), 900)}",
+                "inline": False,
+            },
+        ])
+        if listing.moves:
+            fields.append({"name": "🥊 Golpes", "value": truncate(" • ".join(listing.moves), 1000), "inline": False})
+    elif listing.texture:
+        fields.append({"name": "🎨 Textura detectada", "value": f"`{truncate(listing.texture, 900)}`", "inline": False})
     if bool(config.get("show_raw_log", False)):
         fields.append({"name": "📜 Linha da log", "value": code_block(listing.raw_chat), "inline": False})
 
@@ -596,7 +873,16 @@ def ensure_storage(config: dict[str, Any]) -> None:
               id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint TEXT NOT NULL UNIQUE,
               detected_at TEXT NOT NULL, detected_at_epoch INTEGER NOT NULL, status TEXT, reason TEXT,
               item TEXT NOT NULL, item_key TEXT NOT NULL, seller TEXT, amount TEXT, amount_value REAL,
-              currency TEXT, price_type TEXT, price TEXT, raw_chat TEXT, created_at INTEGER NOT NULL
+              currency TEXT, price_type TEXT, price TEXT, raw_chat TEXT, created_at INTEGER NOT NULL,
+              source TEXT NOT NULL DEFAULT 'log', hover_action TEXT, hover_payload TEXT,
+              is_pokemon INTEGER NOT NULL DEFAULT 0, ability TEXT,
+              hidden_ability INTEGER NOT NULL DEFAULT 0, nature TEXT, gender TEXT,
+              pokemon_size TEXT, texture TEXT, unbreedable TEXT,
+              iv_total INTEGER, iv_max INTEGER, iv_percent REAL, iv_hp INTEGER, iv_attack INTEGER,
+              iv_defense INTEGER, iv_sp_attack INTEGER, iv_sp_defense INTEGER, iv_speed INTEGER,
+              ev_total INTEGER, ev_max INTEGER, ev_percent REAL, ev_hp INTEGER, ev_attack INTEGER,
+              ev_defense INTEGER, ev_sp_attack INTEGER, ev_sp_defense INTEGER, ev_speed INTEGER,
+              moves_json TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_listings_detected ON listings(detected_at_epoch DESC);
             CREATE INDEX IF NOT EXISTS idx_listings_type_detected ON listings(price_type, detected_at_epoch DESC);
@@ -640,6 +926,30 @@ def ensure_storage(config: dict[str, Any]) -> None:
         }.items():
             if name not in user_columns:
                 connection.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
+        listing_columns = {row[1] for row in connection.execute("PRAGMA table_info(listings)")}
+        for name, definition in LISTING_DETAIL_COLUMNS.items():
+            if name not in listing_columns:
+                connection.execute(f"ALTER TABLE listings ADD COLUMN {name} {definition}")
+        connection.execute(
+            "UPDATE listings SET hidden_ability=1 "
+            "WHERE lower(COALESCE(ability, '')) LIKE '%(ha%'"
+        )
+        duplicate_ids = connection.execute(
+            "SELECT id FROM listings WHERE lower(raw_chat) LIKE '%[gtsbridge]%' AND status != 'invalid'"
+        ).fetchall()
+        if duplicate_ids:
+            placeholders = ",".join("?" for _ in duplicate_ids)
+            ids = [row[0] for row in duplicate_ids]
+            connection.execute(
+                f"UPDATE notification_queue SET status='cancelled', last_error='duplicate_bridge_logger' "
+                f"WHERE listing_id IN ({placeholders}) AND status IN ('pending','retry','processing')",
+                ids,
+            )
+            connection.execute(
+                f"UPDATE listings SET status='invalid', reason='duplicate_bridge_logger' "
+                f"WHERE id IN ({placeholders})",
+                ids,
+            )
 
 
 def update_service_status(config: dict[str, Any], name: str, status: str, detail: str = "") -> None:
@@ -654,6 +964,193 @@ def update_service_status(config: dict[str, Any], name: str, status: str, detail
             )
     except sqlite3.Error as exc:
         print(f"[ERRO STATUS] {exc}", file=sys.stderr, flush=True)
+
+
+def read_exact(sock: ssl.SSLSocket, size: int) -> bytes:
+    data = bytearray()
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise ConnectionError("conexão WebSocket encerrada")
+        data.extend(chunk)
+    return bytes(data)
+
+
+def websocket_accept_value(key: str) -> str:
+    digest = hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+    return base64.b64encode(digest).decode("ascii")
+
+
+def websocket_connect(host: str, path: str) -> ssl.SSLSocket:
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    raw = socket.create_connection((host, 443), timeout=15)
+    sock = ssl.create_default_context().wrap_socket(raw, server_hostname=host)
+    request = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {host}\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "User-Agent: pixelmon-gts-discord (local script)\r\n"
+        "\r\n"
+    )
+    sock.sendall(request.encode("ascii"))
+    response = bytearray()
+    while b"\r\n\r\n" not in response:
+        response.extend(sock.recv(4096))
+        if len(response) > 16_384:
+            raise ConnectionError("resposta WebSocket grande demais")
+
+    headers = response.decode("iso-8859-1", errors="replace")
+    if " 101 " not in headers.split("\r\n", 1)[0]:
+        raise ConnectionError(f"Discord Gateway recusou WebSocket: {headers.splitlines()[0]}")
+    expected = websocket_accept_value(key).casefold()
+    if f"sec-websocket-accept: {expected}" not in headers.casefold():
+        raise ConnectionError("Discord Gateway retornou handshake WebSocket inválido")
+    sock.settimeout(1)
+    return sock
+
+
+def websocket_send(sock: ssl.SSLSocket, payload: bytes, opcode: int = 1) -> None:
+    header = bytearray([0x80 | opcode])
+    length = len(payload)
+    if length < 126:
+        header.append(0x80 | length)
+    elif length < 65_536:
+        header.extend([0x80 | 126])
+        header.extend(struct.pack("!H", length))
+    else:
+        header.extend([0x80 | 127])
+        header.extend(struct.pack("!Q", length))
+    mask = os.urandom(4)
+    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    sock.sendall(bytes(header) + mask + masked)
+
+
+def websocket_send_json(sock: ssl.SSLSocket, payload: dict[str, Any]) -> None:
+    websocket_send(sock, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+
+
+def websocket_read(sock: ssl.SSLSocket) -> tuple[int, bytes]:
+    first, second = read_exact(sock, 2)
+    opcode = first & 0x0F
+    masked = bool(second & 0x80)
+    length = second & 0x7F
+    if length == 126:
+        length = struct.unpack("!H", read_exact(sock, 2))[0]
+    elif length == 127:
+        length = struct.unpack("!Q", read_exact(sock, 8))[0]
+    mask = read_exact(sock, 4) if masked else b""
+    payload = read_exact(sock, length) if length else b""
+    if masked:
+        payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    return opcode, payload
+
+
+class DiscordGatewayPresence:
+    def __init__(self, config: dict[str, Any], token: str) -> None:
+        self.config = config
+        self.token = token
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self.run, name="discord-gateway-presence", daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self.thread.join(timeout=3)
+
+    def run(self) -> None:
+        backoff = 2.0
+        while not self.stop_event.is_set():
+            try:
+                self.connect_once()
+                backoff = 2.0
+            except Exception as exc:
+                update_service_status(self.config, "discord_gateway", "offline", str(exc))
+                print(f"[DISCORD GATEWAY] {exc}", file=sys.stderr, flush=True)
+                self.stop_event.wait(backoff)
+                backoff = min(backoff * 1.8, 60)
+
+    def connect_once(self) -> None:
+        update_service_status(self.config, "discord_gateway", "connecting", "abrindo Gateway")
+        sock = websocket_connect(DISCORD_GATEWAY_HOST, DISCORD_GATEWAY_PATH)
+        sequence: int | None = None
+        heartbeat_interval = 45.0
+        try:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                opcode, payload = websocket_read(sock)
+                if opcode == 8:
+                    raise ConnectionError("Discord fechou o Gateway antes do hello")
+                if opcode == 9:
+                    websocket_send(sock, payload, opcode=10)
+                    continue
+                if opcode != 1:
+                    continue
+                message = json.loads(payload.decode("utf-8"))
+                if message.get("op") == 10:
+                    heartbeat_interval = max(float(message["d"]["heartbeat_interval"]) / 1000.0, 5.0)
+                    break
+            else:
+                raise TimeoutError("Discord Gateway não enviou hello")
+
+            websocket_send_json(sock, {
+                "op": 2,
+                "d": {
+                    "token": self.token,
+                    "intents": 0,
+                    "properties": {
+                        "os": sys.platform,
+                        "browser": "pixelmon-gts",
+                        "device": "pixelmon-gts",
+                    },
+                    "presence": {
+                        "status": "online",
+                        "since": None,
+                        "activities": [{"name": "GTS Global", "type": 3}],
+                        "afk": False,
+                    },
+                },
+            })
+            next_heartbeat = time.monotonic() + random.uniform(0.2, min(heartbeat_interval, 5.0))
+            update_service_status(self.config, "discord_gateway", "online", "presence online")
+
+            while not self.stop_event.is_set():
+                if time.monotonic() >= next_heartbeat:
+                    websocket_send_json(sock, {"op": 1, "d": sequence})
+                    next_heartbeat = time.monotonic() + heartbeat_interval
+                try:
+                    opcode, payload = websocket_read(sock)
+                except socket.timeout:
+                    continue
+                if opcode == 8:
+                    raise ConnectionError("Discord fechou o Gateway")
+                if opcode == 9:
+                    websocket_send(sock, payload, opcode=10)
+                    continue
+                if opcode != 1:
+                    continue
+                message = json.loads(payload.decode("utf-8"))
+                if message.get("s") is not None:
+                    sequence = int(message["s"])
+                op = message.get("op")
+                if op == 0 and message.get("t") == "READY":
+                    update_service_status(self.config, "discord_gateway", "online", "READY")
+                elif op == 7:
+                    raise ConnectionError("Discord pediu reconexão")
+                elif op == 9:
+                    raise ConnectionError("sessão Gateway inválida")
+                elif op == 10:
+                    heartbeat_interval = max(float(message["d"]["heartbeat_interval"]) / 1000.0, 5.0)
+        finally:
+            try:
+                websocket_send(sock, b"", opcode=8)
+            except Exception:
+                pass
+            sock.close()
 
 
 def listing_matches_alert(listing: GtsListing, alert: sqlite3.Row) -> bool:
@@ -751,13 +1248,25 @@ def append_history(
             """
             INSERT OR IGNORE INTO listings
               (fingerprint, detected_at, detected_at_epoch, status, reason, item, item_key, seller,
-               amount, amount_value, currency, price_type, price, raw_chat, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               amount, amount_value, currency, price_type, price, raw_chat, created_at,
+               source, hover_action, hover_payload, is_pokemon, ability, hidden_ability, nature, gender, pokemon_size,
+               texture, unbreedable, iv_total, iv_max, iv_percent, iv_hp, iv_attack, iv_defense,
+               iv_sp_attack, iv_sp_defense, iv_speed, ev_total, ev_max, ev_percent, ev_hp, ev_attack,
+               ev_defense, ev_sp_attack, ev_sp_defense, ev_speed, moves_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 fingerprint, detected_at, detected_epoch, status, reason, listing.item, fold_text(listing.item),
                 listing.seller, listing.amount, amount_to_float(listing.amount), listing.currency,
-                listing.price_type, listing.price, listing.raw_chat, int(time.time()),
+                listing.price_type, listing.price, listing.raw_chat, int(time.time()), listing.source,
+                listing.hover_action, listing.hover_payload, int(listing.is_pokemon), listing.ability,
+                int(listing.hidden_ability), listing.nature, listing.gender, listing.size, listing.texture, listing.unbreedable,
+                listing.iv_total, listing.iv_max, listing.iv_percent, listing.iv_hp, listing.iv_attack,
+                listing.iv_defense, listing.iv_sp_attack, listing.iv_sp_defense, listing.iv_speed,
+                listing.ev_total, listing.ev_max, listing.ev_percent, listing.ev_hp, listing.ev_attack,
+                listing.ev_defense, listing.ev_sp_attack, listing.ev_sp_defense, listing.ev_speed,
+                json.dumps(listing.moves, ensure_ascii=False),
             ),
         )
         if cursor.rowcount == 0:
@@ -888,6 +1397,19 @@ def resolve_log_path(path: Path) -> Path:
     return path
 
 
+def resolve_bridge_capture_path(log_path: Path, config: dict[str, Any]) -> Path:
+    bridge = config.get("gts_bridge", {})
+    bridge = bridge if isinstance(bridge, dict) else {}
+    configured = os.environ.get("GTS_BRIDGE_PATH", "").strip() or str(bridge.get("path", "")).strip()
+    if configured:
+        path = Path(configured).expanduser()
+        return path if path.is_absolute() else BASE_DIR / path
+
+    resolved_log = resolve_log_path(log_path)
+    minecraft_directory = resolved_log.parent.parent if resolved_log.parent.name == "logs" else resolved_log.parent
+    return minecraft_directory / "gts-bridge" / "captures.jsonl"
+
+
 def open_log_file(log_path: Path, seek_to_end: bool):
     log_file = log_path.open("r", encoding="utf-8", errors="replace")
     if seek_to_end:
@@ -907,6 +1429,33 @@ def should_reopen_log(log_path: Path, log_file: Any) -> bool:
     return path_stat.st_size < log_file.tell()
 
 
+def process_detected_listing(
+    listing: GtsListing,
+    config: dict[str, Any],
+    template: str,
+    print_filtered: bool,
+    dry_run: bool,
+    notifications: NotificationQueueWorker | None,
+) -> None:
+    filter_result = should_send_listing(config, listing)
+    if not filter_result.allowed:
+        append_history(config, listing, "filtered", filter_result.reason, dry_run=dry_run)
+        if dry_run or print_filtered:
+            print(f"[FILTRADO] {filter_result.reason}: {listing.item} por {listing.price}")
+        return
+
+    message = format_message(template, listing)
+    if dry_run:
+        append_history(config, listing, "dry_run", dry_run=True)
+        print(f"[DRY RUN] {message}")
+        return
+
+    append_history(config, listing, "sent")
+    notifications.wake() if notifications else None
+    detail = " com dados do Pokémon" if listing.is_pokemon else ""
+    print(f"Detectado e enfileirado{detail}: {listing.item} por {listing.price}", flush=True)
+
+
 def follow_log(
     log_path: Path,
     patterns: list[re.Pattern[str]],
@@ -915,9 +1464,6 @@ def follow_log(
     dry_run: bool,
 ) -> None:
     log_path = resolve_log_path(log_path)
-    if not log_path.exists():
-        raise FileNotFoundError(f"Log não encontrado: {log_path}")
-
     poll_interval = float(config.get("poll_interval_seconds", 0.5))
     template = str(config.get("message_template", "GTS: {pokemon} por {price}"))
     print_filtered = bool(config.get("print_filtered", False))
@@ -925,24 +1471,86 @@ def follow_log(
     max_seen = int(config.get("max_seen_lines", 2000))
     ensure_storage(config)
 
-    log_file = open_log_file(log_path, seek_to_end=not bool(config.get("read_from_start", False)))
+    bridge_config = config.get("gts_bridge", {})
+    bridge_config = bridge_config if isinstance(bridge_config, dict) else {}
+    bridge_enabled = bool(bridge_config.get("enabled", True))
+    bridge_path = resolve_bridge_capture_path(log_path, config)
+    log_file = None
+    bridge_file = None
+    bridge_open_attempt = 0.0
+    duplicate_window = float(bridge_config.get("duplicate_window_seconds", 0.75))
+    recent_signatures: dict[str, tuple[float, str]] = {}
     notifications = None if dry_run else NotificationQueueWorker(config, token)
     if notifications:
         notifications.start()
+    presence = None if dry_run or not env_bool("DISCORD_GATEWAY_ENABLED", True) else DiscordGatewayPresence(config, token)
+    if presence:
+        presence.start()
     last_heartbeat = 0.0
     try:
+        while not log_path.exists():
+            if time.monotonic() - last_heartbeat >= 5:
+                print(f"Aguardando Minecraft criar log: {log_path}", flush=True)
+                update_service_status(config, "log_watcher", "waiting", f"aguardando {log_path}")
+                update_service_status(config, "gts_bridge", "waiting", f"aguardando {bridge_path}")
+                last_heartbeat = time.monotonic()
+            time.sleep(2)
+
+        log_file = open_log_file(log_path, seek_to_end=not bool(config.get("read_from_start", False)))
+        if bridge_enabled and bridge_path.exists():
+            bridge_file = open_log_file(
+                bridge_path,
+                seek_to_end=not bool(bridge_config.get("read_from_start", False)),
+            )
+
         print(f"Lendo log: {log_path}", flush=True)
+        if bridge_enabled:
+            print(f"Lendo GTS Bridge: {bridge_path}", flush=True)
         print("Aguardando anúncios do GTS. Ctrl+C para sair.", flush=True)
         update_service_status(config, "log_watcher", "online", str(log_path))
+        update_service_status(
+            config,
+            "gts_bridge",
+            "online" if bridge_file else "waiting",
+            str(bridge_path),
+        )
 
         while True:
             if time.monotonic() - last_heartbeat >= 5:
                 update_service_status(config, "log_watcher", "online", f"monitorando {log_path.name}")
+                if bridge_enabled:
+                    update_service_status(
+                        config,
+                        "gts_bridge",
+                        "online" if bridge_file else "waiting",
+                        f"monitorando {bridge_path.name}" if bridge_file else f"aguardando {bridge_path}",
+                    )
                 last_heartbeat = time.monotonic()
             if should_reopen_log(log_path, log_file):
                 log_file.close()
                 log_file = open_log_file(log_path, seek_to_end=False)
                 print("latest.log foi recriado/truncado; leitura reaberta.")
+
+            if bridge_enabled and bridge_file and should_reopen_log(bridge_path, bridge_file):
+                bridge_file.close()
+                bridge_file = open_log_file(bridge_path, seek_to_end=False)
+                print("captures.jsonl foi recriado/truncado; leitura reaberta.")
+            if bridge_enabled and bridge_file is None and time.monotonic() - bridge_open_attempt >= 2:
+                bridge_open_attempt = time.monotonic()
+                if bridge_path.exists():
+                    bridge_file = open_log_file(bridge_path, seek_to_end=False)
+                    print("GTS Bridge encontrado; captura enriquecida ativada.", flush=True)
+
+            bridge_line = bridge_file.readline() if bridge_file else ""
+            if bridge_line:
+                listing = parse_bridge_capture(bridge_line, patterns)
+                if listing:
+                    signature = listing_signature(listing)
+                    recent_signatures[signature] = (time.monotonic(), "bridge")
+                    process_detected_listing(
+                        listing, config, template, print_filtered, dry_run, notifications
+                    )
+                continue
 
             line = log_file.readline()
             if not line:
@@ -959,25 +1567,27 @@ def follow_log(
             listing = parse_listing(line, patterns)
             if not listing:
                 continue
-
-            filter_result = should_send_listing(config, listing)
-            if not filter_result.allowed:
-                append_history(config, listing, "filtered", filter_result.reason, dry_run=dry_run)
-                if dry_run or print_filtered:
-                    print(f"[FILTRADO] {filter_result.reason}: {listing.item} por {listing.price}")
+            signature = listing_signature(listing)
+            last_match = recent_signatures.get(signature)
+            if (
+                last_match is not None
+                and last_match[1] == "bridge"
+                and time.monotonic() - last_match[0] <= duplicate_window
+            ):
                 continue
-
-            message = format_message(template, listing)
-            if dry_run:
-                append_history(config, listing, "dry_run", dry_run=True)
-                print(f"[DRY RUN] {message}")
-            else:
-                append_history(config, listing, "sent")
-                notifications.wake() if notifications else None
-                print(f"Detectado e enfileirado: {listing.item} por {listing.price}", flush=True)
+            recent_signatures[signature] = (time.monotonic(), "log")
+            if len(recent_signatures) > max_seen:
+                cutoff = time.monotonic() - max(duplicate_window * 4, 5)
+                recent_signatures = {
+                    key: match for key, match in recent_signatures.items() if match[0] >= cutoff
+                }
+            process_detected_listing(listing, config, template, print_filtered, dry_run, notifications)
     finally:
         update_service_status(config, "log_watcher", "offline", "processo encerrado")
-        log_file.close()
+        update_service_status(config, "gts_bridge", "offline", "processo encerrado")
+        log_file.close() if log_file else None
+        bridge_file.close() if bridge_file else None
+        presence.stop() if presence else None
         notifications.stop() if notifications else None
 
 
@@ -1028,6 +1638,7 @@ def main() -> int:
     parser.add_argument("--test-telegram", action="store_true", help="Envia uma mensagem de teste no Telegram e sai.")
     parser.add_argument("--telegram-updates", action="store_true", help="Lista chats recentes do bot para descobrir TELEGRAM_CHAT_ID.")
     parser.add_argument("--announce-site", help="Envia o link público do painel para um canal do Discord e sai.")
+    parser.add_argument("--announce-site-unavailable", help="Marca a mensagem oficial do painel como reconectando e sai.")
     parser.add_argument(
         "--test-type",
         choices=["token", "money", "site"],
@@ -1074,6 +1685,22 @@ def main() -> int:
         else:
             print("Mensagem oficial fixada no canal do Discord.")
         send_telegram_text_optional(format_telegram_site(site_url, permanent_access_url))
+        return 0
+
+    if args.announce_site_unavailable:
+        guild_id = get_required_env("DISCORD_GUILD_ID")
+        channel_id = get_required_env("DISCORD_ANNOUNCE_CHANNEL_ID")
+        reason = args.announce_site_unavailable
+        message_id, pin_error = upsert_pinned_site_message(token, channel_id, format_site_unavailable_message(reason))
+        permanent_access_url = f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
+        PERMANENT_ACCESS_URL_PATH.write_text(permanent_access_url + "\n", encoding="utf-8")
+        print(f"Mensagem oficial do site marcada como reconectando: {message_id}")
+        print(f"Link fixo de acesso: {permanent_access_url}")
+        if pin_error:
+            print(f"[AVISO PIN DISCORD] {pin_error}", file=sys.stderr)
+        else:
+            print("Mensagem oficial fixada no canal do Discord.")
+        send_telegram_text_optional(format_telegram_site_unavailable(reason, permanent_access_url))
         return 0
 
     user_id = get_required_env("DISCORD_USER_ID")
