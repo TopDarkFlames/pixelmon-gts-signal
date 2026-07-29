@@ -2,6 +2,25 @@
 
 Todas as mudanças relevantes deste projeto serão registradas aqui.
 
+## [0.4.0] - 2026-07-29
+
+### Adicionado
+
+- Radar de texturas em `/textures`, agrupando item, TXT e moeda.
+- Alertas avançados por modo de busca, textura, IV mínimo e HA.
+- Pacote rápido de alertas para qualquer TXT de Zacian, Kyogre, Rayquaza, Zamazenta e Eternatus.
+- Tabela `item_stats` para histórico resumido e páginas mais leves com meses de dados.
+- Memória de mercado no detalhe do anúncio, com aparições, mediana e faixa histórica.
+- Diagnóstico administrativo separado para `gts_bridge`, `discord_gateway`, Discord, Telegram e túnel.
+- Ações administrativas para reconstruir estatísticas e otimizar o SQLite.
+
+### Melhorado
+
+- Coletor Python e painel Ruby agora compartilham a mesma lógica de alerta avançado.
+- Migrações ficaram seguras para bancos antigos que ainda não tinham colunas de alerta.
+- README ganhou badges, arquitetura, destaque das features atuais e links de release/perfil.
+- Testes passaram a cobrir radar de TXT, alertas avançados e estatísticas resumidas.
+
 ## [0.3.0] - 2026-07-03
 
 ### Adicionado

@@ -1,16 +1,37 @@
 # Pixelmon GTS Signal
 
+[![Tests](https://github.com/TopDarkFlames/pixelmon-gts-signal/actions/workflows/test.yml/badge.svg)](https://github.com/TopDarkFlames/pixelmon-gts-signal/actions/workflows/test.yml)
+![Ruby](https://img.shields.io/badge/Ruby-Sinatra-cc342d?style=flat-square&logo=ruby&logoColor=white)
+![Python](https://img.shields.io/badge/Python-Discord%20%2B%20Telegram-3776ab?style=flat-square&logo=python&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-WAL%20history-003b57?style=flat-square&logo=sqlite&logoColor=white)
+![Pixelmon](https://img.shields.io/badge/Pixelmon-GTS%20Signal-ef3340?style=flat-square)
+![Last commit](https://img.shields.io/github/last-commit/TopDarkFlames/pixelmon-gts-signal?style=flat-square)
+
 > [!IMPORTANT]
 > Projeto em desenvolvimento ativo. A arquitetura e o roadmap evoluem a partir do uso real em um servidor Pixelmon.
 
-[Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md)
+[Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Contribuindo](CONTRIBUTING.md) · [Release atual](docs/RELEASE_v0.4.0.md) · [README de perfil](docs/github-profile-readme.md)
 
-Sistema local que acompanha o `latest.log` do Pixelmon, detecta anúncios do GTS Global e distribui as informações para:
+Sistema local que transforma anúncios do GTS Global do Pixelmon em sinais pesquisáveis, alertas privados e histórico de mercado.
+
+Ele acompanha o `latest.log`, enriquece mensagens com dados do hover capturados por um mod Forge próprio e distribui as informações para:
 
 - DM privada no Discord;
 - Telegram;
-- painel web com histórico;
+- painel web com histórico, radar de texturas e comparação de preços;
 - mensagem oficial no canal do Discord com o endereço atual do painel, pronta para ser fixada.
+
+## Destaques
+
+- Feed do GTS em tempo real com atualização automática.
+- Captura enriquecida de hover: IVs, EVs, HA, nature, moves e textura.
+- Radar de TXT customizada por Pokémon/item, com histórico agrupado.
+- Alertas avançados por item, vendedor, moeda, preço, TXT, IV mínimo e HA.
+- Pacote pronto para qualquer TXT de Zacian, Kyogre, Rayquaza, Zamazenta e Eternatus.
+- Histórico permanente em SQLite com estatísticas resumidas para meses de dados.
+- Bot Discord com presença online, DM privada e mensagem oficial fixada no servidor.
+- Telegram, fila persistente, retry automático e painel administrativo.
+- Serviço `systemd` que sobe painel, coletor e túnel público quando o PC liga.
 
 ## Componentes ativos
 
@@ -22,9 +43,24 @@ Sistema local que acompanha o `latest.log` do Pixelmon, detecta anúncios do GTS
 | Painel web | Ruby, Sinatra e ERB | `panel.rb`, `views/` |
 | Atualização do feed | HTMX e verificação incremental | `public/dashboard.js`, `public/htmx.min.js` |
 | Estilo | CSS | `public/styles.css` |
-| Usuários, histórico e fila | SQLite WAL | `access_panel.db` |
+| Usuários, histórico, alertas e fila | SQLite WAL | `access_panel.db`, `lib/gts_store.rb` |
 | Hospedagem automática | Tailscale/Cloudflare | `iniciar_permanente.sh` |
 | Inicialização no boot | systemd | `systemd/pixelmon-gts.service` |
+
+## Arquitetura
+
+```mermaid
+flowchart LR
+  MC[Minecraft / Prism latest.log] --> Parser[Coletor Python]
+  Bridge[Forge GTS Bridge<br>hover do chat] --> Parser
+  Parser --> DB[(SQLite WAL)]
+  DB --> Panel[Painel Sinatra]
+  DB --> Queue[Fila de notificações]
+  Queue --> Discord[Discord DM + canal fixado]
+  Queue --> Telegram[Telegram]
+  Panel --> Browser[Dashboard LIVE]
+  Tunnel[Cloudflare/Tailscale] --> Panel
+```
 
 ## Configuração
 
@@ -153,6 +189,7 @@ Rotas principais:
 - `/login`: autenticação;
 - `/register`: solicitação de conta;
 - `/dashboard`: histórico ao vivo;
+- `/textures`: radar de TXT customizada;
 - `/opportunities`: anúncios abaixo da mediana com histórico suficiente;
 - `/favorites`: itens e vendedores acompanhados pelo usuário;
 - `/seller/:name`: frequência, variedade e histórico do vendedor;
@@ -164,9 +201,11 @@ Rotas principais:
 - `/forgot-password`: recuperação de senha;
 - `/health`: verificação do serviço.
 
-O painel oferece tema escuro por padrão com troca opcional para o tema claro, atualização automática por versão, filtros por período e preço, detector de oportunidades, alertas por usuário, telemetria das integrações e recuperação de senha. Quando os pacotes locais estão disponíveis, ele também resolve sprites comuns e customizados pelo nome, textura e Pokédex, além de imagens de cosméticos identificados pelo NBT. Os arquivos originais não são alterados; somente as imagens usadas são extraídas para o cache ignorado `runtime/listing-assets/`.
+O painel oferece tema escuro por padrão com troca opcional para o tema claro, atualização automática por versão, filtros por período e preço, detector de oportunidades, radar de TXT, alertas por usuário, telemetria das integrações e recuperação de senha. Quando os pacotes locais estão disponíveis, ele também resolve sprites comuns e customizados pelo nome, textura e Pokédex, além de imagens de cosméticos identificados pelo NBT. Os arquivos originais não são alterados; somente as imagens usadas são extraídas para o cache ignorado `runtime/listing-assets/`.
 
 A Central de Oportunidades usa até 30 dias de histórico, exige pelo menos três amostras comparáveis e remove valores extremos pelo intervalo interquartil quando existem oito ou mais registros. Cada sinal exibe quantidade de amostras e confiança baixa, média ou alta.
+
+O Radar de Texturas usa a tabela resumida `item_stats`, então a página continua leve mesmo com milhares de anúncios salvos. Cada grupo junta item, TXT e moeda, mantendo primeira aparição, última aparição, mediana, menor preço e maior preço.
 
 Favoritos de itens e vendedores alimentam notificações do navegador. Elas funcionam enquanto o site estiver aberto ou minimizado; avisos com o navegador totalmente fechado exigiriam Web Push com chaves VAPID e um serviço público permanente.
 
@@ -183,6 +222,15 @@ Os anúncios e trabalhos de entrega ficam no SQLite. Falhas de Discord ou Telegr
 Os testes cobrem o parser, moedas, deduplicação, alertas, fila persistente, migração e renderização das rotas Sinatra.
 
 O workflow em `.github/workflows/test.yml` executa a mesma suíte em cada push e pull request.
+
+## GitHub
+
+Para deixar o projeto mais visível no perfil:
+
+- fixe este repositório no perfil;
+- use o README pronto em `docs/github-profile-readme.md` no repositório de perfil `TopDarkFlames/TopDarkFlames`;
+- crie releases com as notas em `docs/`;
+- abra issues usando os templates em `.github/ISSUE_TEMPLATE/`.
 
 ## Arquivos importantes
 

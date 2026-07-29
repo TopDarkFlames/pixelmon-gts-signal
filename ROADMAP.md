@@ -32,18 +32,25 @@ O Pixelmon GTS Signal está em desenvolvimento ativo. O foco atual é transforma
 - Revisão administrativa de registros isolados.
 - Testes de integração na fila e backup automático do SQLite.
 - CI no GitHub Actions.
+- Radar de texturas customizadas com histórico por item, TXT e moeda.
+- Alertas avançados por TXT, IV mínimo e HA.
+- Estatísticas resumidas em `item_stats` para manter o histórico leve.
+- Templates de issue e documentação de release para organizar o desenvolvimento no GitHub.
 
 ## Em andamento
 
 - Ajustar os limiares do detector com dados reais de cada moeda.
 - Melhorar a observabilidade do túnel público.
-- Ampliar a cobertura de testes de email e falhas das APIs externas.
+- Melhorar o README do perfil GitHub com prints reais do painel.
+- Ampliar a cobertura de testes de email, Cloudflare e falhas das APIs externas.
 
 ## Planejado
 
 - Filtros completos salvos por usuário.
 - Relatórios semanais de preço e volume.
 - Exportação de histórico por período.
+- Ranking de texturas raras por espécie.
+- Score de preço por item: barato, normal, caro ou suspeito.
 - Web Push com VAPID para avisos com o navegador fechado.
 - Autenticação opcional por passkey.
 
