@@ -16,14 +16,14 @@ Configure o `.env` localmente. Nunca envie tokens, banco SQLite ou logs privados
 Antes de abrir PR ou fazer push:
 
 ```bash
-./testar.sh
+./scripts/testar.sh
 git diff --check
 ```
 
 ## Áreas principais
 
-- `gts_dm_bot.py`: parser, Discord, Telegram e fila.
-- `panel.rb`: rotas Sinatra, autenticação e painel.
+- `app/gts_dm_bot.py`: parser, Discord, Telegram e fila.
+- `app/panel.rb`: rotas Sinatra, autenticação e painel.
 - `lib/gts_store.rb`: schema SQLite, migrações e estatísticas.
 - `views/`: telas ERB.
 - `public/styles.css`: visual do painel.

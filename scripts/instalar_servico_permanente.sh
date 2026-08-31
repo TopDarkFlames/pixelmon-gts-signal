@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_NAME="pixelmon-gts.service"
 USER_SERVICE_DIR="$HOME/.config/systemd/user"
 SERVICE_PATH="$USER_SERVICE_DIR/$SERVICE_NAME"
@@ -47,7 +47,7 @@ systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
 echo
 echo "Instalação concluída. O serviço não iniciará mais automaticamente."
 echo "Abra o launcher em:"
-echo "  $ROOT_DIR/abrir_launcher.sh"
+echo "  $ROOT_DIR/scripts/abrir_launcher.sh"
 echo
 echo "Ou instale o atalho no menu:"
 echo "  mkdir -p ~/.local/share/applications && cp '$ROOT_DIR/pixelmon-gts-launcher.desktop' ~/.local/share/applications/"

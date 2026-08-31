@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 RUNTIME_DIR="$ROOT_DIR/runtime"
@@ -40,7 +40,7 @@ backup_database() {
   local retention_days
   local backup_path
 
-  configured_path="$(env_value PANEL_DB_PATH access_panel.db)"
+  configured_path="$(env_value PANEL_DB_PATH data/access_panel.db)"
   if [[ "$configured_path" = /* ]]; then
     database_path="$configured_path"
   else
@@ -161,7 +161,7 @@ configure_funnel() {
 
 announce_site() {
   local url="$1"
-  if python3 -u gts_dm_bot.py --announce-site "$url" >"$ANNOUNCE_LOG" 2>&1; then
+  if python3 -u "$ROOT_DIR/app/gts_dm_bot.py" --announce-site "$url" >"$ANNOUNCE_LOG" 2>&1; then
     echo "Mensagem oficial atualizada no Discord e URL enviada ao Telegram."
   else
     echo "Falha ao anunciar URL:" >&2
@@ -171,7 +171,7 @@ announce_site() {
 
 announce_site_unavailable() {
   local reason="$1"
-  if python3 -u gts_dm_bot.py --announce-site-unavailable "$reason" >"$ANNOUNCE_LOG" 2>&1; then
+  if python3 -u "$ROOT_DIR/app/gts_dm_bot.py" --announce-site-unavailable "$reason" >"$ANNOUNCE_LOG" 2>&1; then
     echo "Mensagem oficial marcada como reconectando."
   else
     echo "Falha ao marcar URL como reconectando:" >&2
@@ -323,7 +323,7 @@ monitor_processes() {
             # derrubar o painel e o túnel público. Reinicia somente o coletor.
             echo "Reiniciando somente o bot GTS em 3 segundos..." >&2
             sleep 3
-            python3 -u gts_dm_bot.py >>"${LOGS[$i]}" 2>&1 &
+            python3 -u "$ROOT_DIR/app/gts_dm_bot.py" >>"${LOGS[$i]}" 2>&1 &
             PIDS[$i]="$!"
             ;;
           "gerenciador Cloudflare")
@@ -379,9 +379,9 @@ main() {
   LOGS=()
   trap cleanup INT TERM EXIT
 
-  start_process "painel Ruby" "$PANEL_LOG" ./executar_painel.sh
+  start_process "painel Ruby" "$PANEL_LOG" "$ROOT_DIR/scripts/executar_painel.sh"
   wait_for_panel
-  start_process "bot GTS" "$BOT_LOG" python3 -u gts_dm_bot.py
+  start_process "bot GTS" "$BOT_LOG" python3 -u "$ROOT_DIR/app/gts_dm_bot.py"
 
   if wait_for_tailscale && configure_funnel; then
     echo "Hospedagem permanente ativa via Tailscale Funnel."

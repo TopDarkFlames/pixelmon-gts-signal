@@ -4,7 +4,7 @@
 
 ## Validação
 
-- [ ] `./testar.sh`
+- [ ] `./scripts/testar.sh`
 - [ ] Teste manual no painel
 - [ ] Sem mudanças em `.env` ou banco local
 

@@ -24,9 +24,9 @@ from typing import Any
 from unicodedata import normalize as unicode_normalize
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 ENV_PATH = BASE_DIR / ".env"
-CONFIG_PATH = BASE_DIR / "config.json"
+CONFIG_PATH = BASE_DIR / "config" / "config.json"
 SITE_MESSAGE_ID_PATH = BASE_DIR / "runtime" / "discord_site_message_id.txt"
 PERMANENT_ACCESS_URL_PATH = BASE_DIR / "runtime" / "permanent_access_url.txt"
 DISCORD_API = "https://discord.com/api/v10"
@@ -1062,8 +1062,8 @@ def history_config(config: dict[str, Any]) -> dict[str, Any]:
 def database_path(config: dict[str, Any]) -> Path:
     configured = os.environ.get("PANEL_DB_PATH", "").strip()
     if not configured:
-        configured = str(history_config(config).get("database", "access_panel.db"))
-    return config_path(config, configured, "access_panel.db")
+        configured = str(history_config(config).get("database", "data/access_panel.db"))
+    return config_path(config, configured, "data/access_panel.db")
 
 
 def database_connection(config: dict[str, Any]) -> sqlite3.Connection:

@@ -17,7 +17,7 @@ Esta release transforma o painel em uma central mais completa para caça de text
 
 ```bash
 git pull
-./testar.sh
+./scripts/testar.sh
 systemctl --user restart pixelmon-gts.service
 ```
 
@@ -26,7 +26,7 @@ Na primeira inicialização depois do update, o banco cria as colunas novas e re
 ## Verificação
 
 ```bash
-./status_permanente.sh
+./scripts/status_permanente.sh
 ```
 
 Confira:

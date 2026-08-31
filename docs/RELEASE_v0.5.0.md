@@ -18,7 +18,7 @@ Esta release adiciona o Mercador Viajante como um sinal próprio do painel, sepa
 
 ```bash
 git pull
-./testar.sh
+./scripts/testar.sh
 systemctl --user restart pixelmon-gts.service
 ```
 
@@ -27,8 +27,8 @@ Na primeira inicialização depois do update, o banco cria a tabela `merchant_sp
 ## Verificação
 
 ```bash
-python3 gts_dm_bot.py --test-merchant-line '[CHAT] O Mercador viajante chegou! Coordenadas: X: -123 Y: 64 Z: 987'
-./status_permanente.sh
+python3 app/gts_dm_bot.py --test-merchant-line '[CHAT] O Mercador viajante chegou! Coordenadas: X: -123 Y: 64 Z: 987'
+./scripts/status_permanente.sh
 ```
 
 Confira:

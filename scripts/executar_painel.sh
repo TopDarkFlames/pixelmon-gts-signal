@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 env_value() {
@@ -30,4 +30,4 @@ fi
 export GEM_HOME="$GEM_ROOT"
 export GEM_PATH="$GEM_ROOT:/usr/lib/ruby/gems/$RUBY_ABI"
 
-exec ruby "$PUMA_BIN" --bind "tcp://$PANEL_HOST:$PANEL_PORT" --threads 2:8 config.ru
+exec ruby "$PUMA_BIN" --bind "tcp://$PANEL_HOST:$PANEL_PORT" --threads 2:8 app/config.ru

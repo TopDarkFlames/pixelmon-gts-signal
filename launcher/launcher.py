@@ -11,7 +11,7 @@ import webbrowser
 from pathlib import Path
 from tkinter import messagebox
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 SERVICE = "pixelmon-gts.service"
 BG, CARD, CARD2 = "#080b16", "#11172a", "#19233d"
 WHITE, MUTED, PURPLE, BLUE = "#f4f7ff", "#8994b7", "#8d5cff", "#4b86ff"

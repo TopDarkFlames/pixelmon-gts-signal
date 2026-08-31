@@ -38,15 +38,17 @@ Ele acompanha o `latest.log`, enriquece mensagens com dados do hover capturados 
 
 | Componente | Tecnologia | Arquivo |
 | --- | --- | --- |
-| Captura e notificações | Python | `gts_dm_bot.py` |
+| Captura e notificações | Python | `app/gts_dm_bot.py` |
 | Hover completo do chat | Forge 1.12.2 | `gts-bridge/` |
 | Sprites e cosméticos locais | Ruby | `lib/gts_assets.rb`, `lib/resource_archive.rb` |
-| Painel web e Mercador | Ruby, Sinatra e ERB | `panel.rb`, `views/` |
+| Painel web e Mercador | Ruby, Sinatra e ERB | `app/panel.rb`, `views/` |
 | Atualização do feed | HTMX e verificação incremental | `public/dashboard.js`, `public/htmx.min.js` |
 | Estilo | CSS | `public/styles.css` |
-| Usuários, histórico, alertas e fila | SQLite WAL | `access_panel.db`, `lib/gts_store.rb` |
-| Hospedagem automática | Tailscale/Cloudflare | `iniciar_permanente.sh` |
+| Usuários, histórico, alertas e fila | SQLite WAL | `data/access_panel.db`, `lib/gts_store.rb` |
+| Hospedagem automática | Tailscale/Cloudflare | `scripts/iniciar_permanente.sh` |
 | Inicialização no boot | systemd | `systemd/pixelmon-gts.service` |
+
+Os scripts de operação ficam agrupados em `scripts/`. Os arquivos `.sh` mantidos na raiz são apenas atalhos compatíveis para quem já usava os comandos antigos.
 
 ## Arquitetura
 
@@ -99,7 +101,7 @@ TELEGRAM_CHAT_ID=id_da_conversa
 
 PANEL_HOST=127.0.0.1
 PANEL_PORT=8080
-PANEL_DB_PATH=access_panel.db
+PANEL_DB_PATH=data/access_panel.db
 ```
 
 Nunca publique o arquivo `.env`.
@@ -109,7 +111,7 @@ Nunca publique o arquivo `.env`.
 O serviço não precisa mais iniciar junto com o computador. Use o launcher desktop nativo para ligar ou desligar o painel, o coletor, as notificações e o túnel público:
 
 ```bash
-./abrir_launcher.sh
+./scripts/abrir_launcher.sh
 ```
 
 Também é possível abrir `Pixelmon GTS Launcher` pelo menu de aplicativos. O launcher é uma janela nativa; o botão `ABRIR PAINEL WEB` abre o painel do projeto somente quando você quiser.
@@ -119,7 +121,7 @@ Também é possível abrir `Pixelmon GTS Launcher` pelo menu de aplicativos. O l
 Instalação inicial:
 
 ```bash
-./instalar_servico_permanente.sh
+./scripts/instalar_servico_permanente.sh
 ```
 
 Depois de instalado, o serviço fica preparado para ser controlado pelo launcher. Ele não é habilitado no boot. Quando ligado, painel, bot e túnel reiniciam sozinhos em caso de falha.
@@ -129,7 +131,7 @@ Não execute outro launcher manual ao mesmo tempo: o serviço automático já us
 Consultar serviço, URL e logs:
 
 ```bash
-./status_permanente.sh
+./scripts/status_permanente.sh
 ```
 
 Comandos de manutenção:
@@ -175,7 +177,7 @@ O marcador completo é obrigatório. Mensagens do GTS local ou linhas que apenas
 Testar uma linha sem enviar notificações:
 
 ```bash
-python3 gts_dm_bot.py --test-line 'linha completa da log'
+python3 app/gts_dm_bot.py --test-line 'linha completa da log'
 ```
 
 ## Mercador Viajante
@@ -193,7 +195,7 @@ Exemplos aceitos:
 Testar uma linha do Mercador sem enviar notificações:
 
 ```bash
-python3 gts_dm_bot.py --test-merchant-line '[CHAT] O Mercador viajante chegou! Coordenadas: X: -123 Y: 64 Z: 987'
+python3 app/gts_dm_bot.py --test-merchant-line '[CHAT] O Mercador viajante chegou! Coordenadas: X: -123 Y: 64 Z: 987'
 ```
 
 No site, entre em `/merchant` e clique em `Ativar som` uma vez no navegador. Depois disso, novos spawns mostram um aviso na tela, tocam um som curto e deixam `/warp lohr` mais as coordenadas prontas para copiar.
@@ -201,8 +203,8 @@ No site, entre em `/merchant` e clique em `Ativar som` uma vez no navegador. Dep
 Testar integrações:
 
 ```bash
-python3 gts_dm_bot.py --test-discord --test-type token
-python3 gts_dm_bot.py --test-telegram --test-type token
+python3 app/gts_dm_bot.py --test-discord --test-type token
+python3 app/gts_dm_bot.py --test-telegram --test-type token
 ```
 
 ## Discord
@@ -246,12 +248,12 @@ Favoritos de itens e vendedores alimentam notificações do navegador. Elas func
 
 Antes de cada inicialização, o launcher cria um backup consistente do SQLite em `runtime/backups/`. A retenção padrão é de 14 dias e pode ser alterada com `PANEL_BACKUP_RETENTION_DAYS`.
 
-Os anúncios e trabalhos de entrega ficam no SQLite. Falhas de Discord ou Telegram são tentadas novamente até cinco vezes e sobrevivem a reinicializações. O antigo `gts_history.csv` é importado de forma incremental por fingerprint, sem duplicar anúncios já migrados.
+Os anúncios e trabalhos de entrega ficam em `data/access_panel.db`. Falhas de Discord ou Telegram são tentadas novamente até cinco vezes e sobrevivem a reinicializações. O antigo `data/gts_history.csv` é importado de forma incremental por fingerprint, sem duplicar anúncios já migrados.
 
 ## Testes
 
 ```bash
-./testar.sh
+./scripts/testar.sh
 ```
 
 Os testes cobrem o parser, moedas, Mercador Viajante, deduplicação, alertas, fila persistente, migração e renderização das rotas Sinatra.
@@ -272,8 +274,8 @@ Para deixar o projeto mais visível no perfil:
 Não apague:
 
 - `.env`;
-- `access_panel.db`;
-- `gts_history.csv` enquanto a migração não tiver sido confirmada;
+- `data/access_panel.db`;
+- `data/gts_history.csv` enquanto a migração não tiver sido confirmada;
 - `vendor/`;
 - `public/htmx.min.js`;
 - arquivos dentro de `views/` e `systemd/`.

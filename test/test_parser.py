@@ -5,13 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import gts_dm_bot as bot
+from app import gts_dm_bot as bot
 
 
 class ParserTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.config = bot.load_config(Path(__file__).parents[1] / "config.json")
+        cls.config = bot.load_config(Path(__file__).parents[1] / "config" / "config.json")
         cls.patterns = bot.compile_patterns(cls.config)
 
     def test_parses_pokecoin_listing(self):

@@ -3,7 +3,7 @@
 
 require "rubygems"
 
-vendor_gems = File.join(__dir__, "vendor", "bundle", "ruby", RbConfig::CONFIG.fetch("ruby_version"))
+vendor_gems = File.join(__dir__, "..", "vendor", "bundle", "ruby", RbConfig::CONFIG.fetch("ruby_version"))
 Gem.paths = {
   "GEM_HOME" => vendor_gems,
   "GEM_PATH" => [vendor_gems, Gem.default_dir, Gem.user_dir].uniq.join(File::PATH_SEPARATOR)
@@ -18,13 +18,13 @@ require "set"
 require "sinatra/base"
 require "sqlite3"
 require "time"
-require_relative "lib/gts_store"
-require_relative "lib/gts_assets"
+require_relative "../lib/gts_store"
+require_relative "../lib/gts_assets"
 
 class PixelmonGTSPanel < Sinatra::Base
-  ROOT = File.expand_path(__dir__)
+  ROOT = File.expand_path("..", __dir__)
   ENV_PATH = File.join(ROOT, ".env")
-  CONFIG_PATH = File.join(ROOT, "config.json")
+  CONFIG_PATH = File.join(ROOT, "config", "config.json")
   COOKIE_NAME = "gts_panel_session"
   PBKDF2_ITERATIONS = 260_000
   SESSION_TTL = 60 * 60 * 24 * 14
@@ -80,7 +80,7 @@ class PixelmonGTSPanel < Sinatra::Base
     end
 
     def database_path
-      configured = config_env("PANEL_DB_PATH", "access_panel.db")
+      configured = config_env("PANEL_DB_PATH", "data/access_panel.db")
       File.absolute_path(configured, ROOT)
     end
 
@@ -1593,9 +1593,9 @@ class PixelmonGTSPanel < Sinatra::Base
   end
 
   def self.init_database!
-    configured = ENV.fetch("PANEL_DB_PATH", "access_panel.db")
+    configured = ENV.fetch("PANEL_DB_PATH", "data/access_panel.db")
     path = File.absolute_path(configured, ROOT)
-    GTSStore.initialize!(path: path, csv_path: File.join(ROOT, "gts_history.csv"))
+    GTSStore.initialize!(path: path, csv_path: File.join(ROOT, "data", "gts_history.csv"))
   end
 end
 

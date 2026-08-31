@@ -31,4 +31,4 @@ jobs:
         with:
           python-version: "3.12"
       - name: Run project tests
-        run: ./testar.sh
+        run: ./scripts/testar.sh

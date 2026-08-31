@@ -2,7 +2,7 @@
 Type=Application
 Name=Pixelmon GTS Launcher
 Comment=Controle pessoal do bot Pixelmon GTS
-Exec=/home/nero/Downloads/Projetos/pixelmon-gts-discord/abrir_launcher.sh
+Exec=/home/nero/Downloads/Projetos/pixelmon-gts-discord/scripts/abrir_launcher.sh
 Icon=/home/nero/Downloads/Projetos/pixelmon-gts-discord/icons/Logo.png
 Terminal=false
 Categories=Utility;Network;

@@ -15,7 +15,7 @@ Dir.mktmpdir do |directory|
   ENV["DISCORD_USER_ID"] = "123456789012345678"
   ENV["TELEGRAM_CHAT_ID"] = "123456789"
   ENV["GTS_ASSETS_ENABLED"] = "false"
-  require_relative "../panel"
+  require_relative "../app/panel"
   PixelmonGTSPanel.init_database!
 
   database = GTSStore.connect(ENV.fetch("PANEL_DB_PATH"))
