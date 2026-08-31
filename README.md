@@ -32,7 +32,7 @@ Ele acompanha o `latest.log`, enriquece mensagens com dados do hover capturados 
 - Histórico permanente em SQLite com estatísticas resumidas para meses de dados.
 - Bot Discord com presença online, DM privada e mensagem oficial fixada no servidor.
 - Telegram, fila persistente, retry automático e painel administrativo.
-- Serviço `systemd` que sobe painel, coletor e túnel público quando o PC liga.
+- Serviço `systemd` controlado manualmente pelo launcher, com reinício automático dos componentes em caso de falha.
 
 ## Componentes ativos
 
@@ -51,6 +51,14 @@ Ele acompanha o `latest.log`, enriquece mensagens com dados do hover capturados 
 Os scripts de operação ficam agrupados em `scripts/`; a raiz fica reservada à documentação, manifesto Ruby e configuração geral.
 
 A configuração Python fica declarada em `pyproject.toml`. O projeto não usa dependências Python externas; Tkinter, Ruby, Bundler, systemd e o túnel público são componentes instalados no sistema.
+
+Para registrar os comandos Python no ambiente atual, use:
+
+```bash
+python3 -m pip install -e .
+```
+
+Depois disso, os comandos `pixelmon-gts-bot` e `pixelmon-gts-launcher` ficam disponíveis. A instalação é opcional: os scripts em `scripts/` continuam sendo a forma recomendada de operar o projeto, pois também preparam o painel Ruby e o serviço `systemd`.
 
 ## Arquitetura
 
@@ -84,6 +92,8 @@ Preparação inicial:
 bundle install
 cp .env.example .env
 ```
+
+O `pyproject.toml` não substitui o `.env` nem o `config/config.json`: ele descreve o pacote Python, enquanto esses arquivos guardam as configurações de execução e as credenciais.
 
 As credenciais e caminhos ficam no arquivo `.env`. Use `.env.example` como referência.
 
