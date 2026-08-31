@@ -4,8 +4,11 @@
 # Dados privados e gerados
 access_panel.db
 access_panel.db-*
+data/access_panel.db
+data/access_panel.db-*
 access_panel.py
 gts_history.csv
+data/gts_history.csv
 runtime/
 
 # Dependências e caches locais

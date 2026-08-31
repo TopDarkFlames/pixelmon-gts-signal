@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pixelmon-gts-signal"
+version = "0.5.0"
+description = "Coletor, histórico e alertas do GTS Global do Pixelmon"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "TopDarkFlames"}]
+dependencies = []
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Operating System :: POSIX :: Linux",
+]
+
+[project.scripts]
+pixelmon-gts-bot = "app.gts_dm_bot:main"
+pixelmon-gts-launcher = "launcher.launcher:main"
+
+[tool.setuptools.packages.find]
+include = ["app*", "launcher*"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py"]
+
+[tool.pixelmon-gts]
+ruby = ">=3.4"
+database = "SQLite WAL em data/access_panel.db"
+web = "Sinatra/Puma em scripts/executar_painel.sh"
+minecraft_bridge = "Forge 1.12.2 em gts-bridge/"
+system_dependencies = [
+  "Ruby 3.4+ e Bundler",
+  "Tkinter para o launcher desktop",
+  "systemd --user",
+  "cloudflared ou Tailscale Funnel",
+]
+
+# O projeto usa apenas a biblioteca padrão Python:
+# argparse, sqlite3, urllib, ssl, socket, tkinter e threading.
+# Tkinter é fornecido pelo sistema operacional, não pelo PyPI.

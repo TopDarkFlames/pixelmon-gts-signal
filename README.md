@@ -48,7 +48,9 @@ Ele acompanha o `latest.log`, enriquece mensagens com dados do hover capturados 
 | Hospedagem automática | Tailscale/Cloudflare | `scripts/iniciar_permanente.sh` |
 | Inicialização no boot | systemd | `systemd/pixelmon-gts.service` |
 
-Os scripts de operação ficam agrupados em `scripts/`. Os arquivos `.sh` mantidos na raiz são apenas atalhos compatíveis para quem já usava os comandos antigos.
+Os scripts de operação ficam agrupados em `scripts/`; a raiz fica reservada à documentação, manifesto Ruby e configuração geral.
+
+A configuração Python fica declarada em `pyproject.toml`. O projeto não usa dependências Python externas; Tkinter, Ruby, Bundler, systemd e o túnel público são componentes instalados no sistema.
 
 ## Arquitetura
 

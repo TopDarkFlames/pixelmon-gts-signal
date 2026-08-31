@@ -187,5 +187,9 @@ class Launcher(tk.Tk):
             webbrowser.open(self.current_url)
 
 
-if __name__ == "__main__":
+def main() -> None:
     Launcher().mainloop()
+
+
+if __name__ == "__main__":
+    main()
