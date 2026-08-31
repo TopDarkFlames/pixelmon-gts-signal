@@ -1,24 +1,55 @@
-<section class="auth-layout">
-  <div class="auth-copy">
-    <span class="eyebrow">GLOBAL TRADE SIGNAL / 01</span>
-    <h1>O mercado inteiro, no seu radar.</h1>
-    <p>Ofertas do GTS Global monitoradas ao vivo, organizadas por moeda e prontas para você agir.</p>
-    <div class="signal-board" aria-hidden="true">
-      <span><i class="signal token"></i>TOKEN FEED</span>
-      <span><i class="signal money"></i>POKÉCOIN FEED</span>
-      <span><i class="signal site"></i>SITE BALANCE</span>
+<section class="auth-layout login-shell">
+  <section class="auth-visual" aria-labelledby="login-product-title">
+    <div class="auth-identity">
+      <picture class="auth-logo-picture">
+        <source srcset="/icons/logo-zex-alpha.webp?v=2" type="image/webp">
+        <img class="auth-logo-image" src="/icons/Logo.png?v=2" alt="Zex.py">
+      </picture>
+
+      <div class="auth-copy">
+        <p class="auth-overline">MONITORAMENTO DO GTS GLOBAL</p>
+        <h1 id="login-product-title">Pixelmon GTS Signal</h1>
+        <p>Ofertas ao vivo, histórico de preços e alertas personalizados em um painel privado.</p>
+      </div>
     </div>
-  </div>
-  <section class="card auth-card">
-    <span class="section-code">ACESSO PRIVADO</span>
-    <h2>Entrar no painel</h2>
-    <p class="muted">Use sua conta aprovada.</p>
+  </section>
+
+  <section class="auth-card login-card" aria-labelledby="login-title">
+    <div class="login-heading">
+      <span class="section-code">ACESSO PRIVADO</span>
+      <h2 id="login-title">Bem-vindo de volta</h2>
+      <p class="muted">Entre com sua conta para acessar o painel.</p>
+    </div>
+
     <% if message %><p class="notice"><%= h(message) %></p><% end %>
-    <form method="post" action="/login">
-      <label>Email<input name="email" type="email" required autocomplete="email" placeholder="voce@email.com"></label>
-      <label>Senha<input name="password" type="password" required autocomplete="current-password" placeholder="Sua senha"></label>
-      <button type="submit">Acessar radar <span aria-hidden="true">→</span></button>
+
+    <form method="post" action="/login" class="login-form">
+      <label>
+        <span>Email</span>
+        <span class="login-input">
+          <input name="email" type="email" required autocomplete="email" inputmode="email" placeholder="nome@exemplo.com">
+        </span>
+      </label>
+
+      <label>
+        <span class="login-label-row">
+          <span>Senha</span>
+          <a href="/forgot-password">Esqueceu a senha?</a>
+        </span>
+        <span class="login-input password-input">
+          <input name="password" type="password" required autocomplete="current-password" placeholder="Digite sua senha" data-password-input>
+          <button type="button" class="password-reveal" data-password-toggle aria-label="Mostrar senha" aria-pressed="false">Mostrar</button>
+        </span>
+      </label>
+
+      <button type="submit" class="login-submit">
+        <span>Entrar</span>
+        <b aria-hidden="true">→</b>
+      </button>
     </form>
-    <p class="form-foot"><a href="/forgot-password">Esqueci minha senha</a> · Ainda não tem acesso? <a href="/register">Solicitar convite</a></p>
+
+    <div class="login-card-foot">
+      <p>Não possui acesso? <a href="/register">Solicitar convite</a></p>
+    </div>
   </section>
 </section>

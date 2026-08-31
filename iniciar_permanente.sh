@@ -315,8 +315,28 @@ monitor_processes() {
     for i in "${!PIDS[@]}"; do
       if ! kill -0 "${PIDS[$i]}" >/dev/null 2>&1; then
         echo "Processo parou: ${NAMES[$i]}" >&2
-        tail -n 60 "${LOGS[$i]}" >&2 || true
-        return 1
+        tail -n 30 "${LOGS[$i]}" >&2 || true
+
+        case "${NAMES[$i]}" in
+          "bot GTS")
+            # Uma disputa transitória no SQLite ou uma falha de API não deve
+            # derrubar o painel e o túnel público. Reinicia somente o coletor.
+            echo "Reiniciando somente o bot GTS em 3 segundos..." >&2
+            sleep 3
+            python3 -u gts_dm_bot.py >>"${LOGS[$i]}" 2>&1 &
+            PIDS[$i]="$!"
+            ;;
+          "gerenciador Cloudflare")
+            echo "Reiniciando somente o gerenciador Cloudflare em 3 segundos..." >&2
+            sleep 3
+            cloudflare_manager_loop >>"${LOGS[$i]}" 2>&1 &
+            PIDS[$i]="$!"
+            ;;
+          *)
+            # Se o painel morrer, o systemd reinicia o conjunto completo.
+            return 1
+            ;;
+        esac
       fi
     done
     sleep 3

@@ -1,0 +1,20 @@
+<section class="dashboard-head compact-head merchant-head">
+  <div>
+    <span class="eyebrow">LOHR / EVENT WATCH</span>
+    <h1>Mercador Viajante</h1>
+    <p>Captura automática do chat quando o mercador aparece e informa as coordenadas.</p>
+  </div>
+  <div class="merchant-sound-control">
+    <button type="button" class="secondary" data-merchant-sound-toggle>Ativar som</button>
+    <small data-merchant-sound-status>Som desativado neste navegador</small>
+  </div>
+</section>
+
+<section class="stats-grid">
+  <article class="stat stat-total"><span>Spawns salvos</span><strong><%= @merchant_metrics[:total] %></strong><small>desde a captação</small></article>
+  <article class="stat stat-money"><span>Últimas 24h</span><strong><%= @merchant_metrics[:day] %></strong><small>eventos detectados</small></article>
+  <article class="stat stat-token"><span>Locais únicos</span><strong><%= @merchant_metrics[:unique_coords] %></strong><small>coordenadas distintas</small></article>
+  <article class="stat stat-site"><span>Último spawn</span><strong><%= @merchant_metrics[:last_seen].positive? ? h(format_utc(@merchant_metrics[:last_seen])) : "—" %></strong><small>horário registrado</small></article>
+</section>
+
+<%= erb :merchant_feed, layout: false %>

@@ -33,6 +33,7 @@ Dir.mktmpdir do |directory|
     "currency" => "PokéCoins", "price_type" => "money", "price" => "$ 4,000,000.00 PokéCoins",
     "raw_chat" => "[GTS Global] test", "source" => "bridge", "is_pokemon" => 1,
     "ability" => "Technician", "hidden_ability" => 1, "nature" => "Jolly", "texture" => "Hero",
+    "gender" => "Macho", "pokemon_size" => "Small", "unbreedable" => "Não",
     "iv_total" => 140, "iv_max" => 186, "iv_percent" => 75.27, "iv_hp" => 14,
     "iv_attack" => 27, "iv_defense" => 6, "iv_sp_attack" => 31, "iv_sp_defense" => 31,
     "iv_speed" => 31, "moves_json" => JSON.generate(["Spectral Thief", "Drain Punch"])
@@ -56,6 +57,11 @@ Dir.mktmpdir do |directory|
     "reason" => "not_global_gts", "item" => "Haunter", "seller" => "LOCAL", "amount" => "1.00",
     "currency" => "PokéCoins", "price_type" => "money", "price" => "$ 1.00", "raw_chat" => "local GTS"
   })
+  merchant_id = GTSStore.insert_merchant_spawn(database, {
+    "fingerprint" => "merchant-panel", "detected_at" => Time.now.utc.iso8601,
+    "world" => "lohr", "location" => "Igreja de Lohr", "x" => -123, "y" => 64, "z" => 987,
+    "raw_chat" => "O mercador chegou em Igreja de Lohr nas coordenadas -123 64 987!"
+  })
   database.close
 
   request = Rack::MockRequest.new(PixelmonGTSPanel)
@@ -65,11 +71,18 @@ Dir.mktmpdir do |directory|
   assert_response(dashboard_response, "/dashboard")
   raise "tema escuro não é o padrão" unless dashboard_response.body.include?('data-theme="dark"')
   raise "color-scheme inicial não acompanha o tema" unless dashboard_response.body.include?('name="color-scheme" content="dark"')
+  raise "intro de abertura não foi renderizada" unless dashboard_response.body.include?('data-site-intro') && dashboard_response.body.include?("LIVE MARKET BOOT")
+  raise "assets da intro não foram cache-bustados" unless dashboard_response.body.include?("/styles.css?v=15") && dashboard_response.body.include?("/dashboard.js?v=9")
+  login_response = request.get("/login")
+  assert_response(login_response, "/login")
+  raise "identidade profissional do login não foi renderizada" unless login_response.body.include?("auth-identity") && login_response.body.include?("/icons/logo-zex-alpha.webp?v=2") && login_response.body.include?("Pixelmon GTS Signal")
+  raise "elementos cenográficos antigos continuam no login" if login_response.body.include?("NODE 01") || login_response.body.include?("SECURE ACCESS")
   light_response = request.get("/dashboard", "HTTP_COOKIE" => "gts_panel_session=test-session; gts_panel_theme=light")
   assert_response(light_response, "/dashboard tema claro")
   raise "opção de tema claro não foi preservada" unless light_response.body.include?('data-theme="light"')
   raise "menu não exibe histórico" unless dashboard_response.body.include?('href="/history"')
   raise "menu não exibe texturas" unless dashboard_response.body.include?('href="/textures"')
+  raise "menu não exibe mercador" unless dashboard_response.body.include?('href="/merchant"')
   filtered_feed = request.get("/feed?type=money&period=24h", headers)
   assert_response(filtered_feed, "/feed")
   raise "cursor LIVE não usa o último ID global" unless filtered_feed.body.include?("data-latest-id=\"#{latest_id}\"")
@@ -78,8 +91,11 @@ Dir.mktmpdir do |directory|
   raise "/feed/version retornou ID inválido" unless JSON.parse(version_response.body).fetch("id").to_i == latest_id
   listing_response = request.get("/listing/#{listing_id}", headers)
   assert_response(listing_response, "/listing/:id")
-  raise "perfil Pixelmon não foi exibido" unless listing_response.body.include?("Perfil do Pokémon")
+  raise "perfil Pixelmon não foi exibido" unless listing_response.body.include?("Pokémon Profile")
   raise "textura não foi exibida" unless listing_response.body.include?("Hero")
+  raise "label de gender não foi exibida em inglês" unless listing_response.body.include?("GENDER")
+  raise "gender não foi normalizado para inglês" unless listing_response.body.include?("Male")
+  raise "unbreedable não foi exibido em inglês" unless listing_response.body.include?("UNBREEDABLE") && listing_response.body.include?("No")
   raise "IVs não foram exibidos" unless listing_response.body.include?("75.27%")
   raise "selo HA não foi exibido" unless listing_response.body.include?('class="ha-tag">HA')
   raise "golpes não foram exibidos" unless listing_response.body.include?("Spectral Thief")
@@ -93,6 +109,17 @@ Dir.mktmpdir do |directory|
   textures_response = request.get("/textures?q=Marshadow", headers)
   assert_response(textures_response, "/textures")
   raise "radar de texturas não exibiu a TXT salva" unless textures_response.body.include?("Radar de Texturas") && textures_response.body.include?("Hero")
+  merchant_response = request.get("/merchant", headers)
+  assert_response(merchant_response, "/merchant")
+  raise "aba do mercador não exibiu coordenadas" unless merchant_response.body.include?("Mercador Viajante") && merchant_response.body.include?("-123 64 987")
+  merchant_feed = request.get("/merchant/feed", headers)
+  assert_response(merchant_feed, "/merchant/feed")
+  raise "feed do mercador não exibiu local" unless merchant_feed.body.include?("O MERCADOR CHEGOU EM") && merchant_feed.body.include?("Igreja de Lohr")
+  merchant_version = request.get("/merchant/version", headers)
+  assert_response(merchant_version, "/merchant/version")
+  merchant_payload = JSON.parse(merchant_version.body)
+  raise "versão do mercador retornou ID inválido" unless merchant_payload.fetch("id").to_i == merchant_id
+  raise "versão do mercador não retornou local" unless merchant_payload.fetch("location") == "Igreja de Lohr"
   assert_response(request.get("/seller/ARKIO", headers), "/seller/:name")
   opportunities = request.get("/opportunities", headers)
   assert_response(opportunities, "/opportunities")

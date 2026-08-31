@@ -8,6 +8,11 @@
     "read_from_start": false,
     "duplicate_window_seconds": 0.75
   },
+  "traveling_merchant": {
+    "enabled": true,
+    "world": "lohr",
+    "pending_window_seconds": 8
+  },
   "print_filtered": false,
   "use_embeds": true,
   "show_original_price": true,
@@ -52,6 +57,8 @@
   "message_template": "GTS Global detectado\nItem/Pokémon: {item}\nQuantidade: {amount}\nTipo: {currency}\nPreço original: {price}\nVendedor: {seller}\nLinha: {raw_chat}",
   "patterns": [
     "\\bGTS\\s+Global\\b.*?(?P<seller>[A-Za-z0-9_]{2,16})\\s+added\\s+a[n]?\\s+(?P<item>.+?)\\s+to\\s+the\\s+global\\s+GTS\\s+for\\s+(?P<price_text>.+?)(?:!|$)",
-    "\\bGTS\\s+Global\\b.*?(?P<seller>[A-Za-z0-9_]{2,16})\\s+added\\s+(?P<item>.+?)\\s+to\\s+the\\s+global\\s+GTS\\s+for\\s+(?P<price_text>.+?)(?:!|$)"
+    "\\bGTS\\s+Global\\b.*?(?P<seller>[A-Za-z0-9_]{2,16})\\s+added\\s+(?P<item>.+?)\\s+to\\s+the\\s+global\\s+GTS\\s+for\\s+(?P<price_text>.+?)(?:!|$)",
+    "\\bGTS\\s+Global\\b.*?(?P<seller>[A-Za-z0-9_]{2,16})\\s+adicionou\\s+um[a]?\\s+(?P<item>.+?)\\s+ao\\s+GTS\\s+Global\\s+por\\s+(?P<price_text>.+?)(?:!|$)",
+    "\\bGTS\\s+Global\\b.*?(?P<seller>[A-Za-z0-9_]{2,16})\\s+adicionou\\s+(?P<item>.+?)\\s+ao\\s+GTS\\s+Global\\s+por\\s+(?P<price_text>.+?)(?:!|$)"
   ]
 }

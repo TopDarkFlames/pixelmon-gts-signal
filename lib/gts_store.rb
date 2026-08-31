@@ -34,10 +34,18 @@ module GTSStore
     "hidden_ability_only" => "INTEGER NOT NULL DEFAULT 0"
   }.freeze
 
+  MERCHANT_COLUMNS = {
+    "world" => "TEXT NOT NULL DEFAULT 'lohr'",
+    "location" => "TEXT",
+    "coordinate_text" => "TEXT"
+  }.freeze
+
   def connect(path)
     database = SQLite3::Database.new(path)
     database.results_as_hash = true
-    database.busy_timeout = 5_000
+    # O painel compartilha o SQLite com o coletor Python. Aguarde uma fila
+    # curta de escritores antes de retornar database is locked ao navegador.
+    database.busy_timeout = 30_000
     database.execute("PRAGMA foreign_keys = ON")
     database.execute("PRAGMA journal_mode = WAL")
     database
@@ -49,6 +57,7 @@ module GTSStore
     ensure_columns(database, "users", USER_COLUMNS)
     ensure_columns(database, "listings", LISTING_COLUMNS)
     ensure_columns(database, "alerts", ALERT_COLUMNS)
+    ensure_columns(database, "merchant_spawns", MERCHANT_COLUMNS)
     ensure_indexes(database)
     database.execute("UPDATE listings SET hidden_ability=1 WHERE lower(COALESCE(ability, '')) LIKE '%(ha%'")
     import_csv(database, csv_path) if csv_path
@@ -74,6 +83,8 @@ module GTSStore
       CREATE INDEX IF NOT EXISTS idx_item_stats_last_seen ON item_stats(last_seen_epoch DESC);
       CREATE INDEX IF NOT EXISTS idx_item_stats_texture ON item_stats(texture_key, appearances, last_seen_epoch DESC);
       CREATE INDEX IF NOT EXISTS idx_item_stats_item ON item_stats(item_key, price_type, last_seen_epoch DESC);
+      CREATE INDEX IF NOT EXISTS idx_merchant_spawns_detected ON merchant_spawns(detected_at_epoch DESC);
+      CREATE INDEX IF NOT EXISTS idx_merchant_spawns_coords ON merchant_spawns(world, x, y, z, detected_at_epoch DESC);
     SQL
   end
 
@@ -110,11 +121,15 @@ module GTSStore
     end
     non_global_ids = database.execute(<<~SQL).map { |row| row["id"] }
       SELECT id FROM listings
-      WHERE status = 'sent' AND lower(raw_chat) NOT LIKE '%to the global gts for%'
+      WHERE status = 'sent'
+        AND lower(raw_chat) NOT LIKE '%to the global gts for%'
+        AND lower(raw_chat) NOT LIKE '%ao gts global por%'
     SQL
     database.execute(<<~SQL)
       UPDATE listings SET status = 'invalid', reason = 'not_global_gts'
-      WHERE status = 'sent' AND lower(raw_chat) NOT LIKE '%to the global gts for%'
+      WHERE status = 'sent'
+        AND lower(raw_chat) NOT LIKE '%to the global gts for%'
+        AND lower(raw_chat) NOT LIKE '%ao gts global por%'
     SQL
     quarantined + non_global_ids.length
   end
@@ -156,6 +171,51 @@ module GTSStore
     listing_id = database.last_insert_row_id
     update_item_stats(database, listing_id) if listing_id.to_i.positive? && values["status"] == "sent"
     listing_id
+  end
+
+  def insert_merchant_spawn(database, row)
+    detected_at = row.fetch("detected_at", Time.now.utc.iso8601).to_s
+    epoch = row["detected_at_epoch"] || parse_epoch(detected_at)
+    x = row.fetch("x").to_f
+    y = row.fetch("y").to_f
+    z = row.fetch("z").to_f
+    coordinate_text = row["coordinate_text"].to_s
+    coordinate_text = format_coordinates(x, y, z) if coordinate_text.empty?
+    raw_chat = row.fetch("raw_chat", "").to_s
+    fingerprint = row["fingerprint"].to_s
+    fingerprint = Digest::SHA256.hexdigest("#{epoch / 60}\0#{coordinate_text}\0#{raw_chat}") if fingerprint.empty?
+    values = {
+      "fingerprint" => fingerprint,
+      "detected_at" => detected_at,
+      "detected_at_epoch" => epoch,
+      "world" => row.fetch("world", "lohr"),
+      "location" => row["location"],
+      "x" => x,
+      "y" => y,
+      "z" => z,
+      "coordinate_text" => coordinate_text,
+      "raw_chat" => raw_chat,
+      "source" => row.fetch("source", "log"),
+      "created_at" => Time.now.to_i
+    }
+    columns = values.keys
+    database.execute(
+      "INSERT OR IGNORE INTO merchant_spawns (#{columns.join(', ')}) VALUES (#{(['?'] * columns.length).join(', ')})",
+      values.values
+    )
+    merchant_id = database.last_insert_row_id
+    return merchant_id if merchant_id.to_i.positive?
+
+    database.get_first_value("SELECT id FROM merchant_spawns WHERE fingerprint=?", [fingerprint]).to_i
+  end
+
+  def format_coordinates(x, y, z)
+    [x, y, z].map { |value| format_coordinate(value) }.join(" ")
+  end
+
+  def format_coordinate(value)
+    number = value.to_f
+    number == number.to_i ? number.to_i.to_s : format("%.2f", number).sub(/\.?0+\z/, "")
   end
 
   def texture_key(value)
@@ -315,6 +375,21 @@ module GTSStore
         amount_sum REAL NOT NULL DEFAULT 0, amount_count INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
         UNIQUE(item_key, texture_key, price_type)
+      );
+      CREATE TABLE IF NOT EXISTS merchant_spawns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fingerprint TEXT NOT NULL UNIQUE,
+        detected_at TEXT NOT NULL,
+        detected_at_epoch INTEGER NOT NULL,
+        world TEXT NOT NULL DEFAULT 'lohr',
+        location TEXT,
+        x REAL NOT NULL,
+        y REAL NOT NULL,
+        z REAL NOT NULL,
+        coordinate_text TEXT,
+        raw_chat TEXT,
+        source TEXT NOT NULL DEFAULT 'log',
+        created_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS alert_matches (
         id INTEGER PRIMARY KEY AUTOINCREMENT, alert_id INTEGER NOT NULL, listing_id INTEGER NOT NULL,

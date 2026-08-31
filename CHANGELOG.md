@@ -2,6 +2,22 @@
 
 Todas as mudanças relevantes deste projeto serão registradas aqui.
 
+## [0.5.0] - 2026-08-10
+
+### Adicionado
+
+- Aba `/merchant` para o Mercador Viajante, com último spawn, histórico e coordenadas copiáveis.
+- Parser do aviso `O Mercador viajante chegou!`, aceitando coordenadas na mesma linha ou na linha seguinte.
+- Parser do GTS Global aceitando anúncios em inglês e português.
+- GTS Bridge atualizado para capturar hover de anúncios em inglês e português.
+- Tabela `merchant_spawns` para manter histórico permanente dos locais capturados.
+- Alertas do Mercador pela fila existente de Discord e Telegram.
+- Alerta sonoro no painel quando um novo spawn é detectado.
+
+### Melhorado
+
+- README e release atualizados com o fluxo de teste do Mercador.
+
 ## [0.4.0] - 2026-07-29
 
 ### Adicionado

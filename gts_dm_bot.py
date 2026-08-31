@@ -35,8 +35,49 @@ DISCORD_GATEWAY_PATH = "/?v=10&encoding=json"
 TELEGRAM_API = "https://api.telegram.org"
 DISCORD_TIMEOUT_SECONDS = 8
 TELEGRAM_TIMEOUT_SECONDS = 6
-GLOBAL_GTS_MARKER = re.compile(r"\bto\s+the\s+global\s+GTS\s+for\b", re.IGNORECASE)
-POKEMON_HOVER_MARKERS = ("ability:", "nature:", "ivs:", "evs:", "moves:")
+GLOBAL_GTS_MARKER = re.compile(
+    r"(?:\bto\s+the\s+global\s+GTS\s+for\b|\bao\s+GTS\s+Global\s+por\b)",
+    re.IGNORECASE,
+)
+MERCHANT_MARKER = "mercador viajante chegou"
+MERCHANT_LOG_MARKER = re.compile(r"\bo\s+mercador\s+chegou\s+em\b", re.IGNORECASE)
+MERCHANT_LOG_MESSAGE = re.compile(
+    r"\bo\s+mercador\s+chegou\s+em\s+(?P<location>.+?)\s+nas?\s+coordenadas?\s*[:=-]?\s*"
+    r"(?P<x>-?\d+(?:[.,]\d+)?)\s*[,;/ ]+\s*"
+    r"(?P<y>-?\d+(?:[.,]\d+)?)\s*[,;/ ]+\s*"
+    r"(?P<z>-?\d+(?:[.,]\d+)?)\s*!?",
+    re.IGNORECASE,
+)
+MERCHANT_NAMED_COORDS = re.compile(
+    r"\bX\s*[:=]?\s*(-?\d+(?:[.,]\d+)?)\D{0,32}"
+    r"\bY\s*[:=]?\s*(-?\d+(?:[.,]\d+)?)\D{0,32}"
+    r"\bZ\s*[:=]?\s*(-?\d+(?:[.,]\d+)?)",
+    re.IGNORECASE,
+)
+MERCHANT_NUMBER = re.compile(r"(?<![\w.])-?\d+(?:[.,]\d+)?(?![\w.])")
+POKEMON_HOVER_MARKERS = (
+    ("ability:", "habilidade:"),
+    ("nature:", "natureza:"),
+    ("ivs:",),
+    ("evs:",),
+    ("moves:", "movimentos:", "golpes:"),
+)
+POKEMON_HOVER_LABELS = {
+    "ability": "ability",
+    "habilidade": "ability",
+    "nature": "nature",
+    "natureza": "nature",
+    "gender": "gender",
+    "genero": "gender",
+    "size": "size",
+    "tamanho": "size",
+    "texture": "texture",
+    "textura": "texture",
+    "unbreedable": "unbreedable",
+    "castrado": "unbreedable",
+}
+EMPTY_MOVE_VALUES = {"none", "nenhum", "n/a", "na"}
+HA_MARKER = re.compile(r"\(\s*(?:HA|HO)\s*\)|\bHidden Ability\b|\bHabilidade Oculta\b", re.IGNORECASE)
 STAT_NAMES = {
     "hp": "hp",
     "atk": "attack",
@@ -92,6 +133,20 @@ class GtsListing:
     @property
     def pokemon(self) -> str:
         return self.item
+
+
+@dataclass(frozen=True)
+class MerchantSpawn:
+    x: float
+    y: float
+    z: float
+    raw_chat: str
+    location: str = ""
+    coordinate_text: str = ""
+    world: str = "lohr"
+    fingerprint: str = ""
+    detected_at: str = ""
+    source: str = "log"
 
 
 @dataclass(frozen=True)
@@ -254,6 +309,116 @@ def parse_price_details(raw_price: str) -> tuple[str, str, str, str]:
     return clean, amount, currency, "desconhecido"
 
 
+def merchant_enabled(config: dict[str, Any]) -> bool:
+    merchant = config.get("traveling_merchant", {})
+    if not isinstance(merchant, dict):
+        return True
+    return bool(merchant.get("enabled", True))
+
+
+def merchant_world(config: dict[str, Any]) -> str:
+    merchant = config.get("traveling_merchant", {})
+    if not isinstance(merchant, dict):
+        return "lohr"
+    return str(merchant.get("world", "lohr") or "lohr")
+
+
+def merchant_pending_window(config: dict[str, Any]) -> float:
+    merchant = config.get("traveling_merchant", {})
+    if not isinstance(merchant, dict):
+        return 8.0
+    return float(merchant.get("pending_window_seconds", 8.0))
+
+
+def has_merchant_marker(text: str) -> bool:
+    return MERCHANT_MARKER in fold_text(text) or bool(MERCHANT_LOG_MARKER.search(strip_minecraft_codes(text)))
+
+
+def coordinate_hint(text: str) -> bool:
+    folded = fold_text(text)
+    return any(hint in folded for hint in ("coord", "corden", "x:", "y:", "z:", "x=", "y=", "z=", "lohr"))
+
+
+def parse_coordinate_number(value: str) -> float:
+    return float(value.replace(",", "."))
+
+
+def format_coordinate(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def format_coordinates(x: float, y: float, z: float) -> str:
+    return " ".join(format_coordinate(value) for value in (x, y, z))
+
+
+def extract_merchant_coordinates(text: str, allow_plain_triplet: bool) -> tuple[float, float, float] | None:
+    clean = strip_minecraft_codes(text)
+    match = MERCHANT_NAMED_COORDS.search(clean)
+    if match:
+        return tuple(parse_coordinate_number(value) for value in match.groups())  # type: ignore[return-value]
+
+    if not allow_plain_triplet and not coordinate_hint(clean):
+        return None
+
+    numbers = [parse_coordinate_number(value) for value in MERCHANT_NUMBER.findall(clean)]
+    if len(numbers) >= 3:
+        return numbers[0], numbers[1], numbers[2]
+    return None
+
+
+def parse_merchant_spawn(
+    log_line: str,
+    config: dict[str, Any],
+    pending_chat: str = "",
+) -> MerchantSpawn | None:
+    chat_text = extract_chat_text(log_line)
+    log_match = MERCHANT_LOG_MESSAGE.search(strip_minecraft_codes(chat_text))
+    location = ""
+    if log_match:
+        location = normalize_field(log_match.group("location"))
+        coordinates = tuple(
+            parse_coordinate_number(log_match.group(axis)) for axis in ("x", "y", "z")
+        )
+        raw_chat = chat_text
+    else:
+        coordinates = None
+    marker = has_merchant_marker(chat_text)
+    if not coordinates and marker:
+        after_marker = re.split(r"mercador\s+viajante\s+chegou!?", chat_text, maxsplit=1, flags=re.IGNORECASE)
+        candidate_text = after_marker[1] if len(after_marker) > 1 else chat_text
+        coordinates = extract_merchant_coordinates(candidate_text, allow_plain_triplet=True)
+        raw_chat = chat_text
+    elif not coordinates and pending_chat:
+        coordinates = extract_merchant_coordinates(chat_text, allow_plain_triplet=True)
+        raw_chat = f"{pending_chat} | {chat_text}"
+    elif not coordinates:
+        return None
+
+    if not coordinates:
+        return None
+
+    x, y, z = coordinates
+    detected_at = datetime.now(timezone.utc).isoformat()
+    coordinate_text = format_coordinates(x, y, z)
+    fingerprint = hashlib.sha256(
+        f"merchant\0{int(time.time()) // 60}\0{merchant_world(config)}\0{location}\0{coordinate_text}\0{raw_chat}".encode(
+            "utf-8",
+            errors="replace",
+        )
+    ).hexdigest()
+    return MerchantSpawn(
+        x=x,
+        y=y,
+        z=z,
+        raw_chat=raw_chat,
+        location=location,
+        coordinate_text=coordinate_text,
+        world=merchant_world(config),
+        fingerprint=fingerprint,
+        detected_at=detected_at,
+    )
+
+
 def parse_listing(log_line: str, patterns: list[re.Pattern[str]]) -> GtsListing | None:
     if "[gtsbridge]" in strip_minecraft_codes(log_line).casefold():
         return None
@@ -273,7 +438,8 @@ def parse_listing(log_line: str, patterns: list[re.Pattern[str]]) -> GtsListing 
         price, amount, currency, price_type = parse_price_details(raw_price)
         seller = normalize_field(data.get("seller", ""))
 
-        if item and price:
+        folded_price = fold_text(price)
+        if item and price and "leilao" not in folded_price and "auction" not in folded_price:
             return GtsListing(
                 item=item,
                 price=price,
@@ -299,36 +465,37 @@ def parse_stat_values(section: str) -> dict[str, int]:
     return values
 
 
+def parse_hover_line_fields(clean: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in clean.splitlines():
+        if ":" not in line:
+            continue
+        label, raw_value = line.split(":", 1)
+        key = POKEMON_HOVER_LABELS.get(fold_text(label).strip())
+        if key and key not in fields:
+            fields[key] = re.sub(r"\s+", " ", raw_value).strip(" :-|")
+    return fields
+
+
 def parse_pokemon_hover(hover_text: str) -> dict[str, Any] | None:
     clean = strip_minecraft_codes(hover_text).replace("\r\n", "\n").replace("\r", "\n")
-    folded = clean.casefold()
-    if not all(marker in folded for marker in POKEMON_HOVER_MARKERS):
+    folded = fold_text(clean)
+    if not all(any(marker in folded for marker in marker_group) for marker_group in POKEMON_HOVER_MARKERS):
         return None
 
+    fields = parse_hover_line_fields(clean)
     details: dict[str, Any] = {}
-    for label, key in {
-        "Nature": "nature",
-        "Gender": "gender",
-        "Size": "size",
-        "Texture": "texture",
-        "Unbreedable": "unbreedable",
-    }.items():
-        match = re.search(rf"(?im)^\s*{label}:\s*(.+?)\s*$", clean)
-        details[key] = normalize_field(match.group(1)) if match else ""
+    for key in ("nature", "gender", "size", "texture", "unbreedable"):
+        details[key] = fields.get(key, "")
 
-    ability_match = re.search(r"(?im)^\s*Ability:\s*(.+?)\s*$", clean)
-    raw_ability = re.sub(r"\s+", " ", ability_match.group(1)).strip() if ability_match else ""
-    details["hidden_ability"] = bool(
-        re.search(r"\(\s*HA\s*\)|\bHidden Ability\b", raw_ability, re.IGNORECASE)
-    )
-    details["ability"] = normalize_field(
-        re.sub(r"\(\s*HA\s*\)|\bHidden Ability\b", "", raw_ability, flags=re.IGNORECASE)
-    )
+    raw_ability = re.sub(r"\s+", " ", fields.get("ability", "")).strip()
+    details["hidden_ability"] = bool(HA_MARKER.search(raw_ability))
+    details["ability"] = normalize_field(HA_MARKER.sub("", raw_ability))
 
-    for prefix, next_prefix in (("iv", "EVs:"), ("ev", "Moves:")):
+    for prefix, next_prefix in (("iv", "EVs:"), ("ev", "(?:Moves|Movimentos|Golpes):")):
         heading = "IVs:" if prefix == "iv" else "EVs:"
         match = re.search(
-            rf"(?is){heading}\s*(\d+)\s*/\s*(\d+)\s*\(([0-9.]+)%\)(.*?)(?=^\s*{next_prefix}|\Z)",
+            rf"(?is)^\s*{heading}\s*(\d+)\s*/\s*(\d+)\s*\(([0-9.]+)%\)(.*?)(?=^\s*{next_prefix}|\Z)",
             clean,
             re.MULTILINE,
         )
@@ -340,11 +507,13 @@ def parse_pokemon_hover(hover_text: str) -> dict[str, Any] | None:
         for stat, value in parse_stat_values(match.group(4)).items():
             details[f"{prefix}_{stat}"] = value
 
-    moves_match = re.search(r"(?is)^\s*Moves:\s*\n\s*(.+?)\s*$", clean, re.MULTILINE)
-    details["moves"] = tuple(
-        normalize_field(move) for move in (moves_match.group(1).split("|") if moves_match else [])
-        if normalize_field(move) and fold_text(normalize_field(move)) != "none"
-    )
+    moves_match = re.search(r"(?is)^\s*(?:Moves|Movimentos|Golpes):\s*\n\s*(.+?)\s*$", clean, re.MULTILINE)
+    moves = []
+    for move in moves_match.group(1).split("|") if moves_match else []:
+        move_name = normalize_field(move)
+        if move_name and fold_text(move_name) not in EMPTY_MOVE_VALUES:
+            moves.append(move_name)
+    details["moves"] = tuple(moves)
     return details
 
 
@@ -594,6 +763,18 @@ def format_telegram_listing(listing: GtsListing) -> str:
     return message
 
 
+def format_telegram_merchant(spawn: MerchantSpawn) -> str:
+    location_line = f"🏛️ Local: {spawn.location}\n" if spawn.location else ""
+    return (
+        "🧭 Mercador viajante apareceu!\n\n"
+        f"{location_line}"
+        f"🌍 Warp: /warp {spawn.world}\n"
+        f"📍 Coordenadas: {spawn.coordinate_text}\n"
+        f"🗺️ Copiar: {spawn.coordinate_text}\n"
+        f"🧾 Linha: {truncate(spawn.raw_chat, 500)}"
+    )
+
+
 def format_telegram_site(site_url: str, permanent_access_url: str) -> str:
     site_url = site_url.rstrip("/")
     return (
@@ -783,6 +964,35 @@ def build_discord_payload(config: dict[str, Any], listing: GtsListing, fallback_
     return payload
 
 
+def build_merchant_discord_payload(spawn: MerchantSpawn) -> dict[str, Any]:
+    location_line = f"**Local:** {truncate(spawn.location, 180)}\n" if spawn.location else ""
+    return {
+        "content": f"🧭 **Mercador apareceu{f' em {spawn.location}' if spawn.location else ''}!**",
+        "allowed_mentions": {"parse": []},
+        "embeds": [
+            {
+                "author": {"name": "Pixelmon Brasil • Mercador Viajante"},
+                "title": "O Mercador viajante chegou!",
+                "description": (
+                    f"{location_line}"
+                    f"**Warp:** `/warp {truncate(spawn.world, 80)}`\n"
+                    f"**Coordenadas:** `{truncate(spawn.coordinate_text, 120)}`"
+                ),
+                "color": 0xF0BD24,
+                "fields": [
+                    {"name": "X", "value": f"`{format_coordinate(spawn.x)}`", "inline": True},
+                    {"name": "Y", "value": f"`{format_coordinate(spawn.y)}`", "inline": True},
+                    {"name": "Z", "value": f"`{format_coordinate(spawn.z)}`", "inline": True},
+                    {"name": "Copiar para rota", "value": code_block(f"/warp {spawn.world}\n{spawn.coordinate_text}", limit=300), "inline": False},
+                    {"name": "Linha do chat", "value": code_block(spawn.raw_chat, limit=700), "inline": False},
+                ],
+                "footer": {"text": "Detectado automaticamente pelo chat do Minecraft"},
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        ],
+    }
+
+
 def contains_any(text: str, terms: list[str]) -> bool:
     folded_text = fold_text(text)
     return any(fold_text(term) in folded_text for term in terms)
@@ -859,8 +1069,12 @@ def database_path(config: dict[str, Any]) -> Path:
 def database_connection(config: dict[str, Any]) -> sqlite3.Connection:
     path = database_path(config)
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=5)
+    # O painel Ruby e o coletor Python escrevem no mesmo banco. O WAL permite
+    # leitura concorrente, mas ainda pode haver uma fila curta de escritores.
+    # Esperar aqui evita que uma disputa transitória derrube o coletor.
+    connection = sqlite3.connect(path, timeout=30)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout = 30000")
     connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
@@ -937,6 +1151,21 @@ def ensure_storage(config: dict[str, Any]) -> None:
               created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
               UNIQUE(item_key, texture_key, price_type)
             );
+            CREATE TABLE IF NOT EXISTS merchant_spawns (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              fingerprint TEXT NOT NULL UNIQUE,
+              detected_at TEXT NOT NULL,
+              detected_at_epoch INTEGER NOT NULL,
+              world TEXT NOT NULL DEFAULT 'lohr',
+              location TEXT,
+              x REAL NOT NULL,
+              y REAL NOT NULL,
+              z REAL NOT NULL,
+              coordinate_text TEXT,
+              raw_chat TEXT,
+              source TEXT NOT NULL DEFAULT 'log',
+              created_at INTEGER NOT NULL
+            );
             """
         )
         user_columns = {row[1] for row in connection.execute("PRAGMA table_info(users)")}
@@ -955,6 +1184,9 @@ def ensure_storage(config: dict[str, Any]) -> None:
         for name, definition in ALERT_DETAIL_COLUMNS.items():
             if name not in alert_columns:
                 connection.execute(f"ALTER TABLE alerts ADD COLUMN {name} {definition}")
+        merchant_columns = {row[1] for row in connection.execute("PRAGMA table_info(merchant_spawns)")}
+        if "location" not in merchant_columns:
+            connection.execute("ALTER TABLE merchant_spawns ADD COLUMN location TEXT")
         connection.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_listings_texture_detected ON listings(texture, detected_at_epoch DESC);
@@ -964,6 +1196,8 @@ def ensure_storage(config: dict[str, Any]) -> None:
             CREATE INDEX IF NOT EXISTS idx_item_stats_last_seen ON item_stats(last_seen_epoch DESC);
             CREATE INDEX IF NOT EXISTS idx_item_stats_texture ON item_stats(texture_key, appearances, last_seen_epoch DESC);
             CREATE INDEX IF NOT EXISTS idx_item_stats_item ON item_stats(item_key, price_type, last_seen_epoch DESC);
+            CREATE INDEX IF NOT EXISTS idx_merchant_spawns_detected ON merchant_spawns(detected_at_epoch DESC);
+            CREATE INDEX IF NOT EXISTS idx_merchant_spawns_coords ON merchant_spawns(world, x, y, z, detected_at_epoch DESC);
             """
         )
         connection.execute(
@@ -1093,17 +1327,39 @@ def update_item_stats(connection: sqlite3.Connection, listing_id: int) -> None:
 
 
 def update_service_status(config: dict[str, Any], name: str, status: str, detail: str = "") -> None:
-    try:
-        with database_connection(config) as connection:
-            connection.execute(
-                """
-                INSERT INTO service_status(name, status, detail, updated_at) VALUES (?, ?, ?, ?)
-                ON CONFLICT(name) DO UPDATE SET status=excluded.status, detail=excluded.detail, updated_at=excluded.updated_at
-                """,
-                (name, status, truncate(detail, 500), int(time.time())),
+    for attempt in range(4):
+        try:
+            with database_connection(config) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO service_status(name, status, detail, updated_at) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET status=excluded.status, detail=excluded.detail, updated_at=excluded.updated_at
+                    """,
+                    (name, status, truncate(detail, 500), int(time.time())),
+                )
+            return
+        except sqlite3.Error as exc:
+            if attempt == 3:
+                print(f"[ERRO STATUS] {exc}", file=sys.stderr, flush=True)
+            else:
+                time.sleep(0.25 * (attempt + 1))
+
+
+def with_sqlite_retry(operation: Any, context: str) -> Any:
+    """Executa uma operação de escrita e tolera disputas curtas entre painel/coletor."""
+    for attempt in range(4):
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            locked = any(word in str(exc).casefold() for word in ("locked", "busy"))
+            if not locked or attempt == 3:
+                raise
+            print(
+                f"[SQLITE] {context}: banco ocupado; tentando novamente ({attempt + 1}/4)",
+                file=sys.stderr,
+                flush=True,
             )
-    except sqlite3.Error as exc:
-        print(f"[ERRO STATUS] {exc}", file=sys.stderr, flush=True)
+            time.sleep(0.5 * (2**attempt))
 
 
 def read_exact(sock: ssl.SSLSocket, size: int) -> bytes:
@@ -1404,12 +1660,92 @@ def enqueue_listing_notifications(
             enqueue_notification(connection, listing_id, int(alert["id"]), "telegram", str(alert["telegram_chat_id"] or ""), payload)
 
 
+def enqueue_merchant_notifications(
+    connection: sqlite3.Connection,
+    spawn_id: int,
+    spawn: MerchantSpawn,
+) -> None:
+    payload = {
+        "type": "merchant",
+        "merchant": asdict(spawn),
+        "message": f"Mercador em {spawn.location or f'/warp {spawn.world}'}: {spawn.coordinate_text}",
+        "alert": "Mercador viajante",
+    }
+    alert_id = -abs(int(spawn_id))
+    discord_destinations = {os.environ.get("DISCORD_USER_ID", "").strip()}
+    telegram_destinations = {os.environ.get("TELEGRAM_CHAT_ID", "").strip()} if telegram_enabled() else set()
+    for user in connection.execute(
+        "SELECT discord_user_id, telegram_chat_id FROM users WHERE status='approved' AND notifications_enabled=1"
+    ):
+        discord_destinations.add(str(user["discord_user_id"] or "").strip())
+        if telegram_enabled():
+            telegram_destinations.add(str(user["telegram_chat_id"] or "").strip())
+
+    for destination in discord_destinations:
+        enqueue_notification(connection, 0, alert_id, "discord", destination, payload)
+    for destination in telegram_destinations:
+        enqueue_notification(connection, 0, alert_id, "telegram", destination, payload)
+
+
+def append_merchant_spawn(
+    config: dict[str, Any],
+    spawn: MerchantSpawn,
+    dry_run: bool = False,
+) -> int | None:
+    if dry_run:
+        print(f"[DRY RUN] Mercador viajante: /warp {spawn.world} {spawn.coordinate_text}")
+        return None
+
+    detected_at = spawn.detected_at or datetime.now(timezone.utc).isoformat()
+    try:
+        detected_epoch = int(datetime.fromisoformat(detected_at.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        detected_epoch = int(time.time())
+
+    with database_connection(config) as connection:
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO merchant_spawns
+              (fingerprint, detected_at, detected_at_epoch, world, location, x, y, z, coordinate_text, raw_chat, source, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                spawn.fingerprint,
+                detected_at,
+                detected_epoch,
+                spawn.world,
+                spawn.location,
+                spawn.x,
+                spawn.y,
+                spawn.z,
+                spawn.coordinate_text or format_coordinates(spawn.x, spawn.y, spawn.z),
+                spawn.raw_chat,
+                spawn.source,
+                int(time.time()),
+            ),
+        )
+        if cursor.rowcount == 0:
+            row = connection.execute("SELECT id FROM merchant_spawns WHERE fingerprint = ?", (spawn.fingerprint,)).fetchone()
+            return int(row["id"]) if row else None
+        spawn_id = int(cursor.lastrowid)
+        enqueue_merchant_notifications(connection, spawn_id, spawn)
+        connection.execute(
+            """
+            INSERT INTO service_status(name, status, detail, updated_at) VALUES ('last_merchant', 'online', ?, ?)
+            ON CONFLICT(name) DO UPDATE SET status='online', detail=excluded.detail, updated_at=excluded.updated_at
+            """,
+            (f"{spawn.location or f'/warp {spawn.world}'} {spawn.coordinate_text}", int(time.time())),
+        )
+        return spawn_id
+
+
 def append_history(
     config: dict[str, Any],
     listing: GtsListing,
     status: str,
     reason: str = "",
     dry_run: bool = False,
+    notify: bool = True,
 ) -> int | None:
     history = history_config(config)
     if not bool(history.get("enabled", True)):
@@ -1458,8 +1794,9 @@ def append_history(
         listing_id = int(cursor.lastrowid)
         if status == "sent":
             update_item_stats(connection, listing_id)
-            message = format_message(str(config.get("message_template", "GTS: {pokemon} por {price}")), listing)
-            enqueue_listing_notifications(connection, listing_id, listing, message)
+            if notify:
+                message = format_message(str(config.get("message_template", "GTS: {pokemon} por {price}")), listing)
+                enqueue_listing_notifications(connection, listing_id, listing, message)
         connection.execute(
             """
             INSERT INTO service_status(name, status, detail, updated_at) VALUES ('last_listing', 'online', ?, ?)
@@ -1510,6 +1847,16 @@ class NotificationQueueWorker:
 
     def _deliver(self, job: sqlite3.Row) -> None:
         payload = json.loads(str(job["payload"]))
+        if payload.get("type") == "merchant":
+            spawn = MerchantSpawn(**payload["merchant"])
+            if job["channel"] == "discord":
+                send_dm_payload(self.discord_token, str(job["destination"]), build_merchant_discord_payload(spawn))
+            elif job["channel"] == "telegram":
+                send_telegram_chat_text(str(job["destination"]), format_telegram_merchant(spawn))
+            else:
+                raise RuntimeError(f"Canal de notificação desconhecido: {job['channel']}")
+            return
+
         listing = GtsListing(**payload["listing"])
         alert = str(payload.get("alert", "")).strip()
         if job["channel"] == "discord":
@@ -1553,10 +1900,20 @@ class NotificationQueueWorker:
             )
 
     def _run(self) -> None:
-        with database_connection(self.config) as connection:
-            connection.execute("UPDATE notification_queue SET status='retry' WHERE status='processing'")
+        try:
+            with_sqlite_retry(
+                lambda: self._recover_processing_jobs(),
+                "recuperação da fila",
+            )
+        except sqlite3.Error as exc:
+            print(f"[SQLITE] recuperação inicial adiada: {exc}", file=sys.stderr, flush=True)
         while not self.stop_event.is_set():
-            job = self._claim()
+            try:
+                job = self._claim()
+            except sqlite3.Error as exc:
+                print(f"[SQLITE] fila temporariamente indisponível: {exc}", file=sys.stderr, flush=True)
+                self.stop_event.wait(2.0)
+                continue
             if not job:
                 self.wake_event.wait(1.0)
                 self.wake_event.clear()
@@ -1564,11 +1921,22 @@ class NotificationQueueWorker:
             try:
                 self._deliver(job)
             except Exception as exc:
-                self._finish(job, exc)
+                try:
+                    with_sqlite_retry(lambda: self._finish(job, exc), "finalização de entrega")
+                except sqlite3.Error as db_exc:
+                    print(f"[SQLITE] não foi possível atualizar a fila: {db_exc}", file=sys.stderr, flush=True)
                 print(f"[ERRO {str(job['channel']).upper()}] {exc}", file=sys.stderr, flush=True)
             else:
-                self._finish(job)
+                try:
+                    with_sqlite_retry(lambda: self._finish(job), "finalização de entrega")
+                except sqlite3.Error as exc:
+                    print(f"[SQLITE] não foi possível atualizar a fila: {exc}", file=sys.stderr, flush=True)
+                    continue
                 print(f"Enviado no {job['channel']}: fila #{job['id']}", flush=True)
+
+    def _recover_processing_jobs(self) -> None:
+        with database_connection(self.config) as connection:
+            connection.execute("UPDATE notification_queue SET status='retry' WHERE status='processing'")
 
 
 def fingerprint_line(line: str) -> str:
@@ -1623,7 +1991,10 @@ def process_detected_listing(
 ) -> None:
     filter_result = should_send_listing(config, listing)
     if not filter_result.allowed:
-        append_history(config, listing, "filtered", filter_result.reason, dry_run=dry_run)
+        with_sqlite_retry(
+            lambda: append_history(config, listing, "filtered", filter_result.reason, dry_run=dry_run),
+            "gravação de anúncio filtrado",
+        )
         if dry_run or print_filtered:
             print(f"[FILTRADO] {filter_result.reason}: {listing.item} por {listing.price}")
         return
@@ -1634,10 +2005,31 @@ def process_detected_listing(
         print(f"[DRY RUN] {message}")
         return
 
-    append_history(config, listing, "sent")
+    with_sqlite_retry(
+        lambda: append_history(config, listing, "sent"),
+        "gravação de anúncio",
+    )
     notifications.wake() if notifications else None
     detail = " com dados do Pokémon" if listing.is_pokemon else ""
     print(f"Detectado e enfileirado{detail}: {listing.item} por {listing.price}", flush=True)
+
+
+def process_detected_merchant(
+    spawn: MerchantSpawn,
+    config: dict[str, Any],
+    dry_run: bool,
+    notifications: NotificationQueueWorker | None,
+) -> None:
+    spawn_id = with_sqlite_retry(
+        lambda: append_merchant_spawn(config, spawn, dry_run=dry_run),
+        "gravação de Mercador",
+    )
+    if spawn_id and notifications:
+        notifications.wake()
+    print(
+        f"Mercador detectado: {spawn.location or f'/warp {spawn.world}'} {spawn.coordinate_text}",
+        flush=True,
+    )
 
 
 def follow_log(
@@ -1664,6 +2056,9 @@ def follow_log(
     bridge_open_attempt = 0.0
     duplicate_window = float(bridge_config.get("duplicate_window_seconds", 0.75))
     recent_signatures: dict[str, tuple[float, str]] = {}
+    pending_merchant_chat = ""
+    pending_merchant_at = 0.0
+    merchant_window = merchant_pending_window(config)
     notifications = None if dry_run else NotificationQueueWorker(config, token)
     if notifications:
         notifications.start()
@@ -1748,6 +2143,21 @@ def follow_log(
             if len(seen) > max_seen:
                 seen.clear()
 
+            if merchant_enabled(config):
+                if pending_merchant_chat and time.monotonic() - pending_merchant_at > merchant_window:
+                    pending_merchant_chat = ""
+                merchant_spawn = parse_merchant_spawn(line, config, pending_merchant_chat)
+                if merchant_spawn:
+                    pending_merchant_chat = ""
+                    process_detected_merchant(merchant_spawn, config, dry_run, notifications)
+                    continue
+                chat_text = extract_chat_text(line)
+                if has_merchant_marker(chat_text):
+                    pending_merchant_chat = chat_text
+                    pending_merchant_at = time.monotonic()
+                    print("Mercador viajante anunciado; aguardando coordenadas.", flush=True)
+                    continue
+
             listing = parse_listing(line, patterns)
             if not listing:
                 continue
@@ -1818,6 +2228,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Envia anúncios do Pixelmon GTS para DM no Discord.")
     parser.add_argument("--dry-run", action="store_true", help="Detecta anúncios sem enviar mensagem no Discord.")
     parser.add_argument("--test-line", help="Testa o parser com uma linha de log e sai.")
+    parser.add_argument("--test-merchant-line", help="Testa o parser do Mercador Viajante com uma linha de chat e sai.")
     parser.add_argument("--test-discord", action="store_true", help="Envia uma DM de teste e sai.")
     parser.add_argument("--test-telegram", action="store_true", help="Envia uma mensagem de teste no Telegram e sai.")
     parser.add_argument("--telegram-updates", action="store_true", help="Lista chats recentes do bot para descobrir TELEGRAM_CHAT_ID.")
@@ -1841,6 +2252,14 @@ def main() -> int:
             print("Não detectou anúncio GTS nessa linha.")
             return 1
         print(json.dumps(listing.__dict__, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.test_merchant_line:
+        spawn = parse_merchant_spawn(args.test_merchant_line, config)
+        if not spawn:
+            print("Não detectou Mercador Viajante com coordenadas nessa linha.")
+            return 1
+        print(json.dumps(asdict(spawn), ensure_ascii=False, indent=2))
         return 0
 
     if args.telegram_updates:

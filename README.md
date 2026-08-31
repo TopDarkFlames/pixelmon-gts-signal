@@ -10,20 +10,21 @@
 > [!IMPORTANT]
 > Projeto em desenvolvimento ativo. A arquitetura e o roadmap evoluem a partir do uso real em um servidor Pixelmon.
 
-[Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Contribuindo](CONTRIBUTING.md) · [Release atual](docs/RELEASE_v0.4.0.md) · [README de perfil](docs/github-profile-readme.md)
+[Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Contribuindo](CONTRIBUTING.md) · [Release atual](docs/RELEASE_v0.5.0.md) · [README de perfil](docs/github-profile-readme.md)
 
-Sistema local que transforma anúncios do GTS Global do Pixelmon em sinais pesquisáveis, alertas privados e histórico de mercado.
+Sistema local que transforma anúncios do GTS Global e eventos do Mercador Viajante do Pixelmon em sinais pesquisáveis, alertas privados e histórico de mercado.
 
 Ele acompanha o `latest.log`, enriquece mensagens com dados do hover capturados por um mod Forge próprio e distribui as informações para:
 
 - DM privada no Discord;
 - Telegram;
-- painel web com histórico, radar de texturas e comparação de preços;
+- painel web com histórico, Mercador Viajante, radar de texturas e comparação de preços;
 - mensagem oficial no canal do Discord com o endereço atual do painel, pronta para ser fixada.
 
 ## Destaques
 
 - Feed do GTS em tempo real com atualização automática.
+- Aba do Mercador Viajante com histórico de spawns, coordenadas copiáveis e alerta sonoro no site.
 - Captura enriquecida de hover: IVs, EVs, HA, nature, moves e textura.
 - Radar de TXT customizada por Pokémon/item, com histórico agrupado.
 - Alertas avançados por item, vendedor, moeda, preço, TXT, IV mínimo e HA.
@@ -40,7 +41,7 @@ Ele acompanha o `latest.log`, enriquece mensagens com dados do hover capturados 
 | Captura e notificações | Python | `gts_dm_bot.py` |
 | Hover completo do chat | Forge 1.12.2 | `gts-bridge/` |
 | Sprites e cosméticos locais | Ruby | `lib/gts_assets.rb`, `lib/resource_archive.rb` |
-| Painel web | Ruby, Sinatra e ERB | `panel.rb`, `views/` |
+| Painel web e Mercador | Ruby, Sinatra e ERB | `panel.rb`, `views/` |
 | Atualização do feed | HTMX e verificação incremental | `public/dashboard.js`, `public/htmx.min.js` |
 | Estilo | CSS | `public/styles.css` |
 | Usuários, histórico, alertas e fila | SQLite WAL | `access_panel.db`, `lib/gts_store.rb` |
@@ -56,6 +57,8 @@ flowchart LR
   Parser --> DB[(SQLite WAL)]
   DB --> Panel[Painel Sinatra]
   DB --> Queue[Fila de notificações]
+  Parser --> Merchant[Mercador Viajante]
+  Merchant --> DB
   Queue --> Discord[Discord DM + canal fixado]
   Queue --> Telegram[Telegram]
   Panel --> Browser[Dashboard LIVE]
@@ -101,7 +104,17 @@ PANEL_DB_PATH=access_panel.db
 
 Nunca publique o arquivo `.env`.
 
-## Serviço automático
+## Launcher pessoal
+
+O serviço não precisa mais iniciar junto com o computador. Use o launcher desktop nativo para ligar ou desligar o painel, o coletor, as notificações e o túnel público:
+
+```bash
+./abrir_launcher.sh
+```
+
+Também é possível abrir `Pixelmon GTS Launcher` pelo menu de aplicativos. O launcher é uma janela nativa; o botão `ABRIR PAINEL WEB` abre o painel do projeto somente quando você quiser.
+
+## Serviço manual
 
 Instalação inicial:
 
@@ -109,7 +122,7 @@ Instalação inicial:
 ./instalar_servico_permanente.sh
 ```
 
-Depois de instalado, painel, bot e túnel iniciam automaticamente com o computador e reiniciam sozinhos em caso de falha.
+Depois de instalado, o serviço fica preparado para ser controlado pelo launcher. Ele não é habilitado no boot. Quando ligado, painel, bot e túnel reiniciam sozinhos em caso de falha.
 
 Não execute outro launcher manual ao mesmo tempo: o serviço automático já usa a porta 8080.
 
@@ -144,10 +157,11 @@ runtime/site_url.txt
 
 ## Formato detectado
 
-O parser identifica mensagens que contêm `to the global GTS for`, por exemplo:
+O parser identifica mensagens em inglês ou português que contêm o marcador completo do GTS Global, por exemplo:
 
 ```text
 [GTS Global] grey_xzfx added a Chave de Shiny Aleatório to the global GTS for Token 4.00 Tokens!
+[GTS Global] Fangzinho2 adicionou um Mudança de Gênero ao GTS Global por $ 4,000,000.00 PokéCoins!
 ```
 
 Tipos reconhecidos:
@@ -163,6 +177,26 @@ Testar uma linha sem enviar notificações:
 ```bash
 python3 gts_dm_bot.py --test-line 'linha completa da log'
 ```
+
+## Mercador Viajante
+
+O coletor também monitora o aviso do chat `O Mercador viajante chegou!`. Quando a mesma mensagem, ou a próxima linha do chat, contém coordenadas, o evento é salvo em `merchant_spawns`, aparece em `/merchant` e entra na fila de Discord/Telegram.
+
+Exemplos aceitos:
+
+```text
+[CHAT] O Mercador viajante chegou! Coordenadas: X: -123 Y: 64 Z: 987
+[CHAT] O Mercador viajante chegou!
+[CHAT] Coordenadas do Mercador: -123, 64, 987
+```
+
+Testar uma linha do Mercador sem enviar notificações:
+
+```bash
+python3 gts_dm_bot.py --test-merchant-line '[CHAT] O Mercador viajante chegou! Coordenadas: X: -123 Y: 64 Z: 987'
+```
+
+No site, entre em `/merchant` e clique em `Ativar som` uma vez no navegador. Depois disso, novos spawns mostram um aviso na tela, tocam um som curto e deixam `/warp lohr` mais as coordenadas prontas para copiar.
 
 Testar integrações:
 
@@ -189,6 +223,7 @@ Rotas principais:
 - `/login`: autenticação;
 - `/register`: solicitação de conta;
 - `/dashboard`: histórico ao vivo;
+- `/merchant`: Mercador Viajante, último spawn, alerta sonoro e locais já capturados;
 - `/textures`: radar de TXT customizada;
 - `/opportunities`: anúncios abaixo da mediana com histórico suficiente;
 - `/favorites`: itens e vendedores acompanhados pelo usuário;
@@ -201,7 +236,7 @@ Rotas principais:
 - `/forgot-password`: recuperação de senha;
 - `/health`: verificação do serviço.
 
-O painel oferece tema escuro por padrão com troca opcional para o tema claro, atualização automática por versão, filtros por período e preço, detector de oportunidades, radar de TXT, alertas por usuário, telemetria das integrações e recuperação de senha. Quando os pacotes locais estão disponíveis, ele também resolve sprites comuns e customizados pelo nome, textura e Pokédex, além de imagens de cosméticos identificados pelo NBT. Os arquivos originais não são alterados; somente as imagens usadas são extraídas para o cache ignorado `runtime/listing-assets/`.
+O painel oferece tema escuro por padrão com troca opcional para o tema claro, atualização automática por versão, filtros por período e preço, detector de oportunidades, Mercador Viajante ao vivo, radar de TXT, alertas por usuário, telemetria das integrações e recuperação de senha. Quando os pacotes locais estão disponíveis, ele também resolve sprites comuns e customizados pelo nome, textura e Pokédex, além de imagens de cosméticos identificados pelo NBT. Os arquivos originais não são alterados; somente as imagens usadas são extraídas para o cache ignorado `runtime/listing-assets/`.
 
 A Central de Oportunidades usa até 30 dias de histórico, exige pelo menos três amostras comparáveis e remove valores extremos pelo intervalo interquartil quando existem oito ou mais registros. Cada sinal exibe quantidade de amostras e confiança baixa, média ou alta.
 
@@ -219,7 +254,7 @@ Os anúncios e trabalhos de entrega ficam no SQLite. Falhas de Discord ou Telegr
 ./testar.sh
 ```
 
-Os testes cobrem o parser, moedas, deduplicação, alertas, fila persistente, migração e renderização das rotas Sinatra.
+Os testes cobrem o parser, moedas, Mercador Viajante, deduplicação, alertas, fila persistente, migração e renderização das rotas Sinatra.
 
 O workflow em `.github/workflows/test.yml` executa a mesma suíte em cada push e pull request.
 

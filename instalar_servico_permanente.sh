@@ -39,11 +39,18 @@ chmod 600 "$SERVICE_PATH"
 echo "5/6 Permitindo que o serviço inicie antes do login gráfico..."
 sudo loginctl enable-linger "$USER"
 
-echo "6/6 Ativando painel, bot e URL permanente..."
+echo "6/6 Instalando o serviço para controle manual pelo launcher..."
 systemctl --user daemon-reload
-systemctl --user enable --now "$SERVICE_NAME"
+systemctl --user disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
 
 echo
-echo "Instalação concluída. Aguarde alguns segundos e consulte:"
+echo "Instalação concluída. O serviço não iniciará mais automaticamente."
+echo "Abra o launcher em:"
+echo "  $ROOT_DIR/abrir_launcher.sh"
+echo
+echo "Ou instale o atalho no menu:"
+echo "  mkdir -p ~/.local/share/applications && cp '$ROOT_DIR/pixelmon-gts-launcher.desktop' ~/.local/share/applications/"
+echo
+echo "Para consultar o serviço manualmente:"
 echo "  systemctl --user status $SERVICE_NAME"
-echo "  cat '$ROOT_DIR/runtime/site_url.txt'"

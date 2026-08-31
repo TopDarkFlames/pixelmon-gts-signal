@@ -28,11 +28,11 @@
 <% if pokemon_listing?(@listing) %>
   <section class="card pokemon-profile">
     <div class="panel-heading">
-      <div><span class="section-code">DADOS PIXELMON / HOVER CAPTURE</span><h2>Perfil do Pokémon</h2></div>
-      <% unless @listing['texture'].to_s.empty? %><span class="texture-status <%= custom_texture?(@listing) ? 'custom' : 'original' %>"><small>TEXTURA</small><strong><%= h(@listing['texture']) %></strong></span><% end %>
+      <div><span class="section-code">PIXELMON DATA / HOVER CAPTURE</span><h2>Pokémon Profile</h2></div>
+      <% unless @listing['texture'].to_s.empty? %><span class="texture-status <%= custom_texture?(@listing) ? 'custom' : 'original' %>"><small>TEXTURE</small><strong><%= h(pokemon_profile_value(@listing['texture'])) %></strong></span><% end %>
     </div>
     <div class="pokemon-profile-grid">
-      <% [["Habilidade", ability_name(@listing)], ["Natureza", @listing['nature']], ["Gênero", @listing['gender']], ["Tamanho", @listing['pokemon_size']], ["Reproduzível", @listing['unbreedable'].to_s.casecmp('no').zero? ? 'Sim' : (@listing['unbreedable'].to_s.empty? ? nil : 'Não')]].each do |label, value| %>
+      <% pokemon_profile_fields(@listing).each do |label, value| %>
         <% unless value.to_s.empty? %><div><span><%= label %></span><strong><%= h(value) %></strong></div><% end %>
       <% end %>
     </div>
@@ -43,15 +43,15 @@
       <div class="stat-spread ev"><div class="spread-heading"><span>EVs</span><strong><%= @listing['ev_total'] %>/<%= @listing['ev_max'] %> · <%= format('%.2f', @listing['ev_percent']) %>%</strong></div><div class="spread-values"><% pokemon_stats(@listing, 'ev').each do |label, value| %><span><small><%= label %></small><strong><%= value.nil? ? '—' : value %></strong></span><% end %></div></div>
     <% end %>
     <% moves = listing_moves(@listing) %>
-    <% unless moves.empty? %><div class="move-section"><span>GOLPES</span><div class="move-list"><% moves.each do |move| %><strong><%= h(move) %></strong><% end %></div></div><% end %>
+    <% unless moves.empty? %><div class="move-section"><span>MOVES</span><div class="move-list"><% moves.each do |move| %><strong><%= h(move) %></strong><% end %></div></div><% end %>
   </section>
 <% elsif !@listing['texture'].to_s.empty? %>
   <section class="card texture-record">
-    <span class="section-code">TXT DO POKÉMON / ITEM DE TEXTURA</span>
+    <span class="section-code">POKÉMON TXT / TEXTURE ITEM</span>
     <h2><%= h(@listing['item']) %></h2>
     <div class="pokemon-meta detail-tags">
       <span class="texture-tag custom">TXT <%= h(@listing['texture']) %></span>
-      <span>Sem IV no anúncio</span>
+      <span>No IV data</span>
     </div>
     <p>Este registro é uma textura avulsa encontrada no NBT do item anunciado. Por isso o site mostra a TXT, mas não mostra IVs, nature e habilidade como em um Pokémon completo.</p>
   </section>

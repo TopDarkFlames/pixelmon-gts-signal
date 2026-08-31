@@ -13,12 +13,13 @@ import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
     name = GtsBridge.NAME,
     version = GtsBridge.VERSION,
     clientSideOnly = true,
-    acceptableRemoteVersions = "*"
+    acceptableRemoteVersions = "*",
+    dependencies = "after:journeymap"
 )
 public final class GtsBridge {
     public static final String MOD_ID = "gtsbridge";
     public static final String NAME = "GTS Bridge";
-    public static final String VERSION = "0.1.0";
+    public static final String VERSION = "0.2.1";
 
     @Mod.EventHandler
     public void preInit(FMLPreInitializationEvent event) {

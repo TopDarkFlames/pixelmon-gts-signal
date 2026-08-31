@@ -4,6 +4,6 @@
   "start_url": "/dashboard",
   "display": "standalone",
   "background_color": "#edf0f1",
-  "theme_color": "#ef3340",
+  "theme_color": "#06090b",
   "description": "Monitor privado do GTS Global do Pixelmon"
 }

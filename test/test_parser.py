@@ -29,6 +29,47 @@ class ParserTest(unittest.TestCase):
         self.assertEqual("token", listing.price_type)
         self.assertEqual("4.00", listing.amount)
 
+    def test_parses_portuguese_listing(self):
+        line = "[CHAT] §7[§6GTS Global§7] §eFangzinho2§7 adicionou um Mudança de Gênero ao GTS Global por §b$ 4,000,000.00 PokéCoins!"
+        listing = bot.parse_listing(line, self.patterns)
+        self.assertIsNotNone(listing)
+        self.assertEqual("Mudança de Gênero", listing.item)
+        self.assertEqual("Fangzinho2", listing.seller)
+        self.assertEqual("money", listing.price_type)
+        self.assertEqual(4_000_000.0, bot.amount_to_float(listing.amount))
+
+    def test_ignores_portuguese_auction_listing(self):
+        line = "[CHAT] [GTS Global] CrwRJ adicionou um [Victorious-Grao-Mestre] » Koraidon ao GTS Global por leilão, iniciando às $ 100,000.00 PokéCoins!"
+        self.assertIsNone(bot.parse_listing(line, self.patterns))
+
+    def test_parses_traveling_merchant_spawn(self):
+        line = "[CHAT] O Mercador viajante chegou! Coordenadas: X: -123 Y: 64 Z: 987"
+        spawn = bot.parse_merchant_spawn(line, self.config)
+        self.assertIsNotNone(spawn)
+        self.assertEqual("lohr", spawn.world)
+        self.assertEqual("-123 64 987", spawn.coordinate_text)
+        self.assertEqual(-123.0, spawn.x)
+        self.assertEqual(64.0, spawn.y)
+        self.assertEqual(987.0, spawn.z)
+
+    def test_parses_real_traveling_merchant_log_message(self):
+        line = (
+            "[14:13:05] [Client thread/INFO] [net.minecraft.client.gui.GuiNewChat]: [CHAT] "
+            "O mercador chegou em Igreja de Lohr nas coordenadas 950 83 1436!"
+        )
+        spawn = bot.parse_merchant_spawn(line, self.config)
+        self.assertIsNotNone(spawn)
+        self.assertEqual("Igreja de Lohr", spawn.location)
+        self.assertEqual("950 83 1436", spawn.coordinate_text)
+        self.assertEqual((950.0, 83.0, 1436.0), (spawn.x, spawn.y, spawn.z))
+
+    def test_parses_traveling_merchant_split_coordinates(self):
+        pending = "O Mercador viajante chegou!"
+        line = "[CHAT] Coordenadas do Mercador: -11, 70, 402"
+        spawn = bot.parse_merchant_spawn(line, self.config, pending)
+        self.assertIsNotNone(spawn)
+        self.assertEqual("-11 70 402", spawn.coordinate_text)
+
     def test_ignores_local_gts_and_unrelated_lines(self):
         invalid_lines = [
             "[CHAT] [GTS] mamp added a Haunter to the GTS for $ 375,000.00 PokéCoins!",
@@ -70,6 +111,40 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(31, listing.iv_speed)
         self.assertEqual(252, listing.ev_speed)
         self.assertEqual("Spectral Thief", listing.moves[0])
+
+    def test_parses_portuguese_pokemon_hover_from_bridge(self):
+        capture = {
+            "capturedAt": "2026-08-10T15:39:08.300Z",
+            "unformatted": "[GTS Global] thz1nm adicionou um Charcadet ao GTS Global por $ 1,000,000.00 PokéCoins!",
+            "hoverEvents": [{
+                "action": "show_text",
+                "valueUnformatted": (
+                    "Habilidade: FlashFire \nNatureza: Jolly\nGênero: Macho\nTamanho: Small\n"
+                    "Textura: Original\nCastrado: Não\n\n"
+                    "IVs: 166/186 (89.25%)\nHP: 31 / Atk: 31 / Def: 31\n"
+                    "SpA: 31 / SpD: 11 / Spe: 31\n\n"
+                    "EVs: 0/510 (0.00%)\nHP: 0 / Atk: 0 / Def: 0\n"
+                    "SpA: 0 / SpD: 0 / Spe: 0\n\n"
+                    "Moves:\nEmber | Leer | Astonish | Nenhum"
+                ),
+            }],
+        }
+        listing = bot.parse_bridge_capture(json.dumps(capture, ensure_ascii=False), self.patterns)
+        self.assertIsNotNone(listing)
+        self.assertEqual("bridge", listing.source)
+        self.assertTrue(listing.is_pokemon)
+        self.assertEqual("Charcadet", listing.item)
+        self.assertEqual("FlashFire", listing.ability)
+        self.assertEqual("Jolly", listing.nature)
+        self.assertEqual("Macho", listing.gender)
+        self.assertEqual("Small", listing.size)
+        self.assertEqual("Original", listing.texture)
+        self.assertEqual("Não", listing.unbreedable)
+        self.assertEqual(166, listing.iv_total)
+        self.assertEqual(31, listing.iv_attack)
+        self.assertEqual(11, listing.iv_sp_defense)
+        self.assertEqual(0, listing.ev_total)
+        self.assertEqual(("Ember", "Leer", "Astonish"), listing.moves)
 
     def test_sqlite_deduplication_and_alert_match(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -127,6 +202,18 @@ class ParserTest(unittest.TestCase):
                     bot.send_dm_payload = original_sender
                 with sqlite3.connect(database) as connection:
                     self.assertEqual("sent", connection.execute("SELECT status FROM notification_queue").fetchone()[0])
+
+                merchant = bot.MerchantSpawn(
+                    x=10, y=65, z=-40, coordinate_text="10 65 -40", world="lohr",
+                    raw_chat="O Mercador viajante chegou! Coordenadas: X: 10 Y: 65 Z: -40",
+                    fingerprint="merchant-test", detected_at="2026-07-03T12:01:00+00:00",
+                )
+                merchant_id = bot.append_merchant_spawn(self.config, merchant)
+                duplicate_id = bot.append_merchant_spawn(self.config, merchant)
+                self.assertEqual(merchant_id, duplicate_id)
+                with sqlite3.connect(database) as connection:
+                    self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM merchant_spawns").fetchone()[0])
+                    self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM notification_queue").fetchone()[0])
             finally:
                 if old_database is None:
                     os.environ.pop("PANEL_DB_PATH", None)

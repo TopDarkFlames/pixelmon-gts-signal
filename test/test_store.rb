@@ -24,10 +24,29 @@ Dir.mktmpdir do |directory|
   raise "coluna texture ausente" unless database.table_info("listings").map { |column| column["name"] }.include?("texture")
   raise "coluna hidden_ability ausente" unless database.table_info("listings").map { |column| column["name"] }.include?("hidden_ability")
   raise "coluna texture_query ausente" unless database.table_info("alerts").map { |column| column["name"] }.include?("texture_query")
+  raise "tabela merchant_spawns ausente" unless database.table_info("merchant_spawns").map { |column| column["name"] }.include?("coordinate_text")
   raise "tabela item_stats não foi preenchida" unless database.get_first_value("SELECT COUNT(*) FROM item_stats").to_i == 1
   assert_equal("original", database.get_first_value("SELECT texture_key FROM item_stats"), "textura padrão no resumo")
   assert_equal(4_000_000.0, database.get_first_value("SELECT amount_value FROM listings"), "valor importado")
   assert_equal("sent", database.get_first_value("SELECT status FROM listings"), "anúncio global preservado")
+  GTSStore.insert_listing(database, {
+    "fingerprint" => "global-pt", "detected_at" => "2026-07-03T12:00:30+00:00", "status" => "sent",
+    "item" => "Mudança de Gênero", "raw_chat" => "[GTS Global] Fangzinho2 adicionou um Mudança de Gênero ao GTS Global por $ 4,000,000.00 PokéCoins"
+  })
+  GTSStore.quarantine_non_global_listings(database)
+  assert_equal("sent", database.get_first_value("SELECT status FROM listings WHERE fingerprint='global-pt'"), "anúncio global em português preservado")
+  merchant_id = GTSStore.insert_merchant_spawn(database, {
+    "fingerprint" => "merchant-store", "detected_at" => "2026-07-03T12:03:00+00:00",
+    "world" => "lohr", "location" => "Igreja de Lohr", "x" => 10, "y" => 65, "z" => -40,
+    "raw_chat" => "O Mercador viajante chegou! Coordenadas: X: 10 Y: 65 Z: -40"
+  })
+  assert_equal(merchant_id, GTSStore.insert_merchant_spawn(database, {
+    "fingerprint" => "merchant-store", "detected_at" => "2026-07-03T12:03:00+00:00",
+    "world" => "lohr", "x" => 10, "y" => 65, "z" => -40,
+    "raw_chat" => "O Mercador viajante chegou! Coordenadas: X: 10 Y: 65 Z: -40"
+  }), "mercador deduplicado")
+  assert_equal("10 65 -40", database.get_first_value("SELECT coordinate_text FROM merchant_spawns"), "coordenadas do mercador")
+  assert_equal("Igreja de Lohr", database.get_first_value("SELECT location FROM merchant_spawns"), "local do mercador")
 
   GTSStore.insert_listing(database, {
     "fingerprint" => "local-gts", "detected_at" => "2026-07-03T12:01:00+00:00", "status" => "sent",

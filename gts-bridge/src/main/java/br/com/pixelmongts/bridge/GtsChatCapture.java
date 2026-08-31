@@ -48,6 +48,8 @@ final class GtsChatCapture {
         }
 
         String unformatted = message.getUnformattedText();
+        MerchantAnnouncement.parse(unformatted).ifPresent(MerchantWaypointManager::updateWaypoint);
+
         if (!isGlobalGtsMessage(unformatted)) {
             return;
         }
@@ -66,7 +68,8 @@ final class GtsChatCapture {
 
     private static boolean isGlobalGtsMessage(String message) {
         String normalized = message == null ? "" : message.toLowerCase(Locale.ROOT);
-        return normalized.contains("to the global gts for");
+        return normalized.contains("to the global gts for")
+            || normalized.contains("ao gts global por");
     }
 
     private static JsonObject createCapture(

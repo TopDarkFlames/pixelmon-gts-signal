@@ -1,0 +1,69 @@
+<section id="merchant-panel" class="market-panel merchant-panel" data-latest-id="<%= @merchant_version.to_i %>" hx-get="/merchant/feed" hx-trigger="merchant:refresh from:body" hx-swap="outerHTML">
+  <div class="panel-heading">
+    <div>
+      <span class="section-code">MERCHANT 01 / <%= @total_rows %> REGISTROS</span>
+      <h2>Última aparição</h2>
+    </div>
+    <% if @latest_merchant %>
+      <span class="trend-badge flat">Detectado <%= h(format_detected_at(@latest_merchant["detected_at"])) %></span>
+    <% else %>
+      <span class="trend-badge flat">Aguardando primeiro spawn</span>
+    <% end %>
+  </div>
+
+  <% if @latest_merchant %>
+    <article class="merchant-current">
+      <div>
+        <span class="section-code">O MERCADOR CHEGOU EM</span>
+        <h3><%= h(@latest_merchant["location"].to_s.empty? ? "/warp #{@latest_merchant['world']}" : @latest_merchant["location"]) %></h3>
+        <p><code>/warp <%= h(@latest_merchant["world"]) %></code></p>
+        <p>Use as coordenadas abaixo para marcar no JourneyMap ou ir direto até a região.</p>
+      </div>
+      <div class="merchant-coords">
+        <span><small>X</small><strong><%= h(format_coord(@latest_merchant["x"])) %></strong></span>
+        <span><small>Y</small><strong><%= h(format_coord(@latest_merchant["y"])) %></strong></span>
+        <span><small>Z</small><strong><%= h(format_coord(@latest_merchant["z"])) %></strong></span>
+      </div>
+      <div class="copy-actions">
+        <button type="button" data-copy-value="<%= h(merchant_coord_text(@latest_merchant)) %>">Copiar coordenadas</button>
+        <button type="button" class="secondary" data-copy-value="/warp <%= h(@latest_merchant["world"]) %>">Copiar warp</button>
+        <button type="button" class="secondary" data-copy-value="<%= h(merchant_route_text(@latest_merchant)) %>">Copiar rota</button>
+      </div>
+    </article>
+  <% else %>
+    <p class="empty-state">Nenhum spawn do Mercador Viajante foi capturado ainda.</p>
+  <% end %>
+
+  <div class="panel-heading merchant-history-head">
+    <div><span class="section-code">HISTÓRICO</span><h2>Locais já capturados</h2></div>
+  </div>
+  <% if @merchant_rows.empty? %>
+    <p class="empty-state">O histórico vai aparecer aqui assim que o primeiro evento for detectado.</p>
+  <% else %>
+    <div class="table-wrap">
+      <table class="market-table merchant-table">
+        <thead><tr><th>Quando</th><th>Local</th><th>Warp</th><th>Coordenadas</th><th>Copiar</th><th>Linha</th></tr></thead>
+        <tbody>
+          <% @merchant_rows.each do |row| %>
+            <tr data-type="site">
+              <td class="time-cell" data-label="Quando"><%= h(format_detected_at(row["detected_at"])) %></td>
+              <td data-label="Local"><strong><%= h(row["location"].to_s.empty? ? "Não informado" : row["location"]) %></strong></td>
+              <td data-label="Warp"><code>/warp <%= h(row["world"]) %></code></td>
+              <td data-label="Coordenadas"><span class="currency currency-site"><%= h(merchant_coord_text(row)) %></span></td>
+              <td data-label="Copiar"><button type="button" class="secondary mini-button" data-copy-value="<%= h(merchant_route_text(row)) %>">Copiar</button></td>
+              <td data-label="Linha"><small class="raw-snippet"><%= h(row["raw_chat"].to_s[0, 130]) %></small></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+    <% pages = (@total_rows.to_f / PixelmonGTSPanel::MERCHANT_PAGE_SIZE).ceil %>
+    <% if pages > 1 %>
+      <nav class="pagination" aria-label="Paginação do mercador">
+        <% if @page > 1 %><a href="?<%= Rack::Utils.build_query(params.to_h.merge('page' => @page - 1)) %>">Anterior</a><% end %>
+        <span>Página <strong><%= @page %></strong> de <%= pages %></span>
+        <% if @page < pages %><a href="?<%= Rack::Utils.build_query(params.to_h.merge('page' => @page + 1)) %>">Próxima</a><% end %>
+      </nav>
+    <% end %>
+  <% end %>
+</section>

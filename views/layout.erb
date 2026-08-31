@@ -4,17 +4,43 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="<%= dark_theme? ? 'dark' : 'light' %>">
-    <meta name="theme-color" content="#ef3340">
+    <meta name="theme-color" content="#06090b">
     <title><%= h(@title) %> · Pixelmon GTS Signal</title>
     <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/styles.css?v=7">
+    <link rel="stylesheet" href="/styles.css?v=15">
     <script defer src="/htmx.min.js"></script>
-    <script defer src="/dashboard.js?v=4"></script>
+    <script defer src="/dashboard.js?v=9"></script>
 </head>
-<body class="page-<%= h(@page_class) %>">
+<body class="page-<%= h(@page_class) %>" data-authenticated="<%= @current_user ? 'true' : 'false' %>">
+  <% if @current_user %>
+    <div class="site-intro" data-site-intro role="presentation">
+      <div class="intro-scan" aria-hidden="true"></div>
+      <div class="intro-frame">
+        <div class="intro-topline">
+          <span>PXGLOBAL.PY</span>
+          <span>LIVE MARKET BOOT</span>
+        </div>
+        <div class="intro-mark">
+          <span class="intro-sigil">G</span>
+          <div>
+            <strong>PIXELMON GTS</strong>
+            <small>SIGNAL NETWORK</small>
+          </div>
+        </div>
+        <div class="intro-status">
+          <span data-intro-line>SYNCING LIVE MARKET</span>
+          <span data-intro-line>BRIDGE CAPTURE ONLINE</span>
+          <span data-intro-line>DISCORD ROUTE READY</span>
+          <span data-intro-line>TELEGRAM ROUTE READY</span>
+        </div>
+        <div class="intro-progress" aria-hidden="true"><i></i></div>
+        <button type="button" class="intro-skip" data-intro-skip>Skip</button>
+      </div>
+    </div>
+  <% end %>
   <header>
     <a class="brand" href="<%= @current_user ? '/dashboard' : '/login' %>">
-      <span class="brand-sigil">G</span>
+      <span class="brand-sigil"><img src="/icons/logo-zex-alpha.webp?v=1" alt=""></span>
       <span><strong>PIXELMON GTS</strong><small>SIGNAL NETWORK</small></span>
     </a>
     <nav>
@@ -30,6 +56,7 @@
           <a href="/dashboard">Mercado</a>
           <a href="/history">Histórico</a>
           <a href="/textures">Texturas</a>
+          <a href="/merchant">Mercador</a>
           <a href="/opportunities">Oportunidades</a>
           <a href="/favorites">Favoritos</a>
           <a href="/alerts" class="nav-alerts">Alertas<% if @nav_alert_count.to_i.positive? %><b><%= @nav_alert_count %></b><% end %></a>
@@ -38,7 +65,7 @@
           <span class="user-chip"><%= h(@current_user["name"]) %></span>
           <form method="post" action="/logout"><input type="hidden" name="csrf" value="<%= h(@current_user['csrf_token']) %>"><button class="link-button" type="submit">Sair</button></form>
       <% else %>
-        <a href="/login">Entrar</a>
+        <% unless request.path_info == "/login" %><a href="/login">Entrar</a><% end %>
         <a class="nav-cta" href="/register">Solicitar acesso</a>
       <% end %>
     </nav>

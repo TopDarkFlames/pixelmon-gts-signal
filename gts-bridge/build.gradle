@@ -13,7 +13,7 @@ buildscript {
 
 apply plugin: 'net.minecraftforge.gradle'
 
-version = '0.1.0'
+version = '0.2.1'
 group = 'br.com.pixelmongts.bridge'
 archivesBaseName = 'gts-bridge'
 
@@ -32,6 +32,11 @@ minecraft {
 
 dependencies {
     minecraft 'net.minecraftforge:forge:1.12.2-14.23.5.2860'
+
+    def journeyMapJar = findProperty('journeyMapJar') ?:
+        System.getenv('JOURNEYMAP_JAR') ?:
+        '/home/nero/.local/share/PrismLauncher/instances/Pixelmon/minecraft/mods/journeymap-1.12.2-5.7.1.jar'
+    compileOnly files(journeyMapJar)
 }
 
 tasks.withType(JavaCompile) {

@@ -34,6 +34,7 @@ class PixelmonGTSPanel < Sinatra::Base
   FEED_PAGE_SIZE = 40
   HISTORY_PAGE_SIZE = 60
   TEXTURE_PAGE_SIZE = 72
+  MERCHANT_PAGE_SIZE = 80
   PRIORITY_TEXTURE_TARGETS = %w[Zacian Kyogre Rayquaza Zamazenta Eternatus].freeze
 
   configure do
@@ -438,6 +439,32 @@ class PixelmonGTSPanel < Sinatra::Base
       }
     end
 
+    def merchant_page
+      [params.fetch("page", "1").to_i, 1].max
+    end
+
+    def merchant_rows(database, limit: MERCHANT_PAGE_SIZE)
+      total = database.get_first_value("SELECT COUNT(*) FROM merchant_spawns").to_i
+      rows = database.execute(
+        "SELECT * FROM merchant_spawns ORDER BY detected_at_epoch DESC LIMIT ? OFFSET ?",
+        [limit, (merchant_page - 1) * limit]
+      )
+      [rows, total]
+    end
+
+    def merchant_latest(database)
+      database.get_first_row("SELECT * FROM merchant_spawns ORDER BY detected_at_epoch DESC, id DESC LIMIT 1")
+    end
+
+    def merchant_metrics(database)
+      {
+        total: database.get_first_value("SELECT COUNT(*) FROM merchant_spawns").to_i,
+        unique_coords: database.get_first_value("SELECT COUNT(DISTINCT world || ':' || x || ':' || y || ':' || z) FROM merchant_spawns").to_i,
+        last_seen: database.get_first_value("SELECT MAX(detected_at_epoch) FROM merchant_spawns").to_i,
+        day: database.get_first_value("SELECT COUNT(*) FROM merchant_spawns WHERE detected_at_epoch >= ?", [now - 86_400]).to_i
+      }
+    end
+
     def enrich_opportunities(database, rows)
       history = database.execute(<<~SQL, [now - (30 * 86_400)])
         SELECT item_key, price_type, amount_value FROM listings
@@ -557,6 +584,19 @@ class PixelmonGTSPanel < Sinatra::Base
       "#{whole.reverse.scan(/.{1,3}/).join('.').reverse},#{decimal}"
     end
 
+    def format_coord(value)
+      number = value.to_f
+      number == number.to_i ? number.to_i.to_s : format("%.2f", number).sub(/\.?0+\z/, "")
+    end
+
+    def merchant_coord_text(row)
+      row["coordinate_text"].to_s.empty? ? [row["x"], row["y"], row["z"]].map { |value| format_coord(value) }.join(" ") : row["coordinate_text"]
+    end
+
+    def merchant_route_text(row)
+      "/warp #{row['world']}\n#{merchant_coord_text(row)}"
+    end
+
     def format_file_size(bytes)
       units = %w[B KB MB GB]
       size = bytes.to_f
@@ -602,6 +642,33 @@ class PixelmonGTSPanel < Sinatra::Base
 
     def ability_name(row)
       row["ability"].to_s.gsub(/\(\s*HA\b\s*\)?/i, "").strip
+    end
+
+    def pokemon_profile_value(value)
+      text = value.to_s.strip
+      return "" if text.empty?
+
+      {
+        "macho" => "Male",
+        "femea" => "Female",
+        "masculino" => "Male",
+        "feminino" => "Female",
+        "nenhum" => "None",
+        "sem genero" => "None",
+        "nao" => "No",
+        "sim" => "Yes"
+      }.fetch(GTSStore.fold(text), text)
+    end
+
+    def pokemon_profile_fields(row)
+      [
+        ["ABILITY", ability_name(row)],
+        ["NATURE", pokemon_profile_value(row["nature"])],
+        ["GENDER", pokemon_profile_value(row["gender"])],
+        ["SIZE", pokemon_profile_value(row["pokemon_size"])],
+        ["TEXTURE", pokemon_profile_value(row["texture"])],
+        ["UNBREEDABLE", pokemon_profile_value(row["unbreedable"])]
+      ]
     end
 
     def custom_texture?(row)
@@ -994,6 +1061,51 @@ class PixelmonGTSPanel < Sinatra::Base
     @page = feed_page
     @sort = texture_sort
     page("Texturas", :textures)
+  end
+
+  get "/merchant" do
+    approved!
+    with_db do |database|
+      @merchant_rows, @total_rows = merchant_rows(database)
+      @latest_merchant = merchant_latest(database)
+      @merchant_metrics = merchant_metrics(database)
+      @merchant_version = @latest_merchant&.fetch("id", 0).to_i
+    end
+    @page = merchant_page
+    page("Mercador Viajante", :merchant)
+  end
+
+  get "/merchant/feed" do
+    approved!
+    with_db do |database|
+      @merchant_rows, @total_rows = merchant_rows(database)
+      @latest_merchant = merchant_latest(database)
+      @merchant_metrics = merchant_metrics(database)
+      @merchant_version = @latest_merchant&.fetch("id", 0).to_i
+    end
+    @page = merchant_page
+    erb :merchant_feed, layout: false
+  end
+
+  get "/merchant/version" do
+    approved!
+    content_type :json
+    headers "Cache-Control" => "no-store, max-age=0"
+    latest = with_db { |database| merchant_latest(database) }
+    payload = if latest
+                {
+                  id: latest["id"].to_i,
+                  world: latest["world"],
+                  location: latest["location"],
+                  coordinate_text: merchant_coord_text(latest),
+                  route_text: merchant_route_text(latest),
+                  detected_at: latest["detected_at"],
+                  detected_at_epoch: latest["detected_at_epoch"].to_i
+                }
+              else
+                { id: 0 }
+              end
+    JSON.generate(payload.merge(checked_at: now))
   end
 
   get "/notifications/check" do

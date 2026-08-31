@@ -36,11 +36,13 @@ O Pixelmon GTS Signal está em desenvolvimento ativo. O foco atual é transforma
 - Alertas avançados por TXT, IV mínimo e HA.
 - Estatísticas resumidas em `item_stats` para manter o histórico leve.
 - Templates de issue e documentação de release para organizar o desenvolvimento no GitHub.
+- Mercador Viajante em `/merchant`, com histórico de spawns, coordenadas copiáveis, alerta sonoro e entrega por Discord/Telegram.
 
 ## Em andamento
 
 - Ajustar os limiares do detector com dados reais de cada moeda.
 - Melhorar a observabilidade do túnel público.
+- Coletar exemplos reais de mensagens do Mercador para ampliar o parser se o servidor usar variações de texto.
 - Melhorar o README do perfil GitHub com prints reais do painel.
 - Ampliar a cobertura de testes de email, Cloudflare e falhas das APIs externas.
 
